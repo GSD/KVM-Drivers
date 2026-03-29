@@ -202,14 +202,47 @@ VOID vhidkbEvtDriverContextCleanup(
     WPP_CLEANUP(WdfDriverWdmGetDriverObject((WDFDRIVER)DriverObject));
 }
 
-// Key injection implementations
+// Key injection implementations with HID report generation
+NTSTATUS vhidkbSendHidReport(
+    _In_ PDEVICE_CONTEXT DeviceContext,
+    _In_ UCHAR ModifierKeys,
+    _In_ UCHAR* KeyCodes,
+    _In_ UCHAR KeyCount
+)
+{
+    UNREFERENCED_PARAMETER(DeviceContext);
+    
+    // Build HID boot keyboard report (8 bytes)
+    // [Modifier][Reserved][Key0][Key1][Key2][Key3][Key4][Key5]
+    UCHAR report[8] = {0};
+    report[0] = ModifierKeys;
+    report[1] = 0; // Reserved
+    
+    // Copy up to 6 key codes
+    UCHAR keysToCopy = (KeyCount > 6) ? 6 : KeyCount;
+    for (UCHAR i = 0; i < keysToCopy; i++) {
+        report[2 + i] = KeyCodes[i];
+    }
+    
+    // For now, just log the report (actual HID injection requires more setup)
+    KdPrint(("vhidkb: HID Report: [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+        report[0], report[1], report[2], report[3], 
+        report[4], report[5], report[6], report[7]));
+    
+    // TODO: Send report through HID stack
+    // This requires either:
+    // 1. Creating a virtual HID device using vhidmini or similar
+    // 2. Using SendInput from user-mode (service)
+    // 3. Direct KbdClass injection (more complex)
+    
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS vhidkbInjectKeyDown(
     _In_ PDEVICE_CONTEXT DeviceContext,
     _In_ WDFREQUEST Request
 )
 {
-    UNREFERENCED_PARAMETER(DeviceContext);
-
     PVKB_INPUT_REPORT inputReport;
     size_t bufferSize;
     NTSTATUS status;
@@ -220,14 +253,22 @@ NTSTATUS vhidkbInjectKeyDown(
         return status;
     }
 
-    // TODO: Build HID report and send to HID class driver
+    // Update device state
+    DeviceContext->CurrentModifierKeys = inputReport->ModifierKeys;
+    for (int i = 0; i < VKB_MAX_KEYS; i++) {
+        DeviceContext->CurrentKeyCodes[i] = inputReport->KeyCodes[i];
+    }
+
+    // Send HID report
+    status = vhidkbSendHidReport(DeviceContext, 
+        inputReport->ModifierKeys, 
+        inputReport->KeyCodes, 
+        VKB_MAX_KEYS);
+
     KdPrint(("vhidkb: InjectKeyDown - Modifier: 0x%x, Key: 0x%x\n", 
         inputReport->ModifierKeys, inputReport->KeyCodes[0]));
 
-    // Pass through to actual HID driver for now
-    // In full implementation, this would construct and send HID reports
-
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS vhidkbInjectKeyUp(
@@ -235,12 +276,23 @@ NTSTATUS vhidkbInjectKeyUp(
     _In_ WDFREQUEST Request
 )
 {
-    UNREFERENCED_PARAMETER(DeviceContext);
     UNREFERENCED_PARAMETER(Request);
 
-    // TODO: Send key release HID report
-    KdPrint(("vhidkb: InjectKeyUp\n"));
-    return STATUS_SUCCESS;
+    // Clear all key codes (send empty report)
+    UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
+    
+    NTSTATUS status = vhidkbSendHidReport(DeviceContext, 
+        DeviceContext->CurrentModifierKeys, 
+        emptyKeys, 
+        VKB_MAX_KEYS);
+
+    // Clear state
+    for (int i = 0; i < VKB_MAX_KEYS; i++) {
+        DeviceContext->CurrentKeyCodes[i] = 0;
+    }
+
+    KdPrint(("vhidkb: InjectKeyUp - All keys released\n"));
+    return status;
 }
 
 NTSTATUS vhidkbInjectKeyCombo(
@@ -248,21 +300,52 @@ NTSTATUS vhidkbInjectKeyCombo(
     _In_ WDFREQUEST Request
 )
 {
-    UNREFERENCED_PARAMETER(DeviceContext);
-    UNREFERENCED_PARAMETER(Request);
+    PVKB_KEY_COMBO combo;
+    size_t bufferSize;
+    NTSTATUS status;
 
-    // TODO: Send multiple key press/release sequence
-    KdPrint(("vhidkb: InjectKeyCombo\n"));
+    status = WdfRequestRetrieveInputBuffer(Request, sizeof(VKB_KEY_COMBO), (PVOID*)&combo, &bufferSize);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    // Process each key in the combo
+    for (ULONG i = 0; i < combo->Count && i < VKB_MAX_KEYS; i++) {
+        UCHAR keys[1] = { combo->Keys[i].KeyCode };
+        
+        if (combo->Keys[i].KeyUp) {
+            // Key up
+            UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
+            vhidkbSendHidReport(DeviceContext, combo->Keys[i].ModifierKeys, emptyKeys, 0);
+        } else {
+            // Key down
+            vhidkbSendHidReport(DeviceContext, combo->Keys[i].ModifierKeys, keys, 1);
+            
+            // Hold duration
+            if (combo->Keys[i].DurationMs > 0) {
+                // In a real implementation, we'd use a timer
+                // For now, just note it
+            }
+        }
+    }
+
+    KdPrint(("vhidkb: InjectKeyCombo with %u keys\n", combo->Count));
     return STATUS_SUCCESS;
 }
 
-NTSTATUS vhidkbReset(
-    _In_ PDEVICE_CONTEXT DeviceContext
-)
+NTSTATUS vhidkbReset(_In_ PDEVICE_CONTEXT DeviceContext)
 {
-    UNREFERENCED_PARAMETER(DeviceContext);
-
-    // TODO: Reset all keys to released state
-    KdPrint(("vhidkb: Reset\n"));
+    UCHAR emptyKeys[VKB_MAX_KEYS] = {0};
+    
+    // Send empty report to release all keys
+    vhidkbSendHidReport(DeviceContext, 0, emptyKeys, 0);
+    
+    // Clear state
+    DeviceContext->CurrentModifierKeys = 0;
+    for (int i = 0; i < VKB_MAX_KEYS; i++) {
+        DeviceContext->CurrentKeyCodes[i] = 0;
+    }
+    
+    KdPrint(("vhidkb: Reset - All keys released\n"));
     return STATUS_SUCCESS;
 }

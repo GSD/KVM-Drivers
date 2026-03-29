@@ -16,7 +16,14 @@
 typedef struct _DEVICE_CONTEXT {
     WDFDEVICE Device;
     WDFQUEUE DefaultQueue;
-    // TODO: Add HID report state tracking
+    WDFIOTARGET HidIoTarget;
+    
+    // Current keyboard state
+    UCHAR CurrentModifierKeys;
+    UCHAR CurrentKeyCodes[VKB_MAX_KEYS];
+    
+    // HID report descriptor
+    WDFMEMORY HidReportDescriptorMemory;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, vhidkbGetDeviceContext)
@@ -46,6 +53,13 @@ VOID vhidkbEvtDriverContextCleanup(
 );
 
 // Key injection functions
+NTSTATUS vhidkbSendHidReport(
+    _In_ PDEVICE_CONTEXT DeviceContext,
+    _In_ UCHAR ModifierKeys,
+    _In_ UCHAR* KeyCodes,
+    _In_ UCHAR KeyCount
+);
+
 NTSTATUS vhidkbInjectKeyDown(
     _In_ PDEVICE_CONTEXT DeviceContext,
     _In_ WDFREQUEST Request
@@ -64,9 +78,6 @@ NTSTATUS vhidkbInjectKeyCombo(
 NTSTATUS vhidkbReset(
     _In_ PDEVICE_CONTEXT DeviceContext
 );
-
-// TODO: Add HID report generation functions
-// NTSTATUS vhidkbSendHidReport(PDEVICE_CONTEXT Context, PHID_INPUT_REPORT Report);
 
 // WPP tracing macros
 #define WPP_CONTROL_GUIDS \
