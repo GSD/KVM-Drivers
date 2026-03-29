@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  
+  <!-- Product definition -->
+  <Product Id="*" 
+           Name="KVM-Drivers" 
+           Language="1033" 
+           Version="1.0.0" 
+           Manufacturer="KVM-Drivers Project"
+           UpgradeCode="{12345678-1234-1234-1234-123456789012}">
+    
+    <Package InstallerVersion="500" 
+             Compressed="yes" 
+             InstallScope="perMachine" 
+             Platform="x64"
+             Description="KVM Virtual Driver Suite for Windows"
+             Comments="Virtual HID Keyboard, Mouse, Controller, and Display Drivers"
+             Manufacturer="KVM-Drivers Project" />
+    
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    
+    <MediaTemplate EmbedCab="yes" />
+    
+    <!-- Features -->
+    <Feature Id="ProductFeature" Title="KVM-Drivers" Level="1">
+      <ComponentGroupRef Id="DriverComponents" />
+      <ComponentGroupRef Id="AppComponents" />
+      <ComponentGroupRef Id="ServiceComponents" />
+      <ComponentGroupRef Id="RegistryComponents" />
+    </Feature>
+    
+    <!-- Prerequisites -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <UIRef Id="WixUI_InstallDir" />
+    
+    <!-- Check for Windows 10/11 -->
+    <Condition Message="This application requires Windows 10 or later.">
+      <![CDATA[Installed OR (VersionNT >= 603)]]>
+    </Condition>
+    
+    <!-- Check for 64-bit Windows -->
+    <Condition Message="This application requires 64-bit Windows.">
+      <![CDATA[VersionNT64]]>
+    </Condition>
+    
+    <!-- Directory structure -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="KVM-Drivers">
+          <Directory Id="DRIVERSFOLDER" Name="Drivers" />
+          <Directory Id="APPSFOLDER" Name="Applications" />
+          <Directory Id="SERVICEFOLDER" Name="Service" />
+          <Directory Id="DOCSFOLDER" Name="Documentation" />
+        </Directory>
+      </Directory>
+      
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationMenuFolder" Name="KVM-Drivers" />
+      </Directory>
+    </Directory>
+    
+    <!-- Driver Components -->
+    <ComponentGroup Id="DriverComponents" Directory="DRIVERSFOLDER">
+      <!-- Virtual HID Keyboard Driver -->
+      <Component Id="vhidkb.sys" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345601}">
+        <File Id="vhidkb.sys" 
+              Source="$(var.BuildDir)\drivers\vhidkb.sys" 
+              KeyPath="yes" />
+        <File Id="vhidkb.inf" 
+              Source="$(var.BuildDir)\drivers\vhidkb.inf" />
+        <File Id="vhidkb.cat" 
+              Source="$(var.BuildDir)\drivers\vhidkb.cat" />
+      </Component>
+      
+      <!-- Virtual HID Mouse Driver -->
+      <Component Id="vhidmouse.sys" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345602}">
+        <File Id="vhidmouse.sys" 
+              Source="$(var.BuildDir)\drivers\vhidmouse.sys" 
+              KeyPath="yes" />
+        <File Id="vhidmouse.inf" 
+              Source="$(var.BuildDir)\drivers\vhidmouse.inf" />
+        <File Id="vhidmouse.cat" 
+              Source="$(var.BuildDir)\drivers\vhidmouse.cat" />
+      </Component>
+      
+      <!-- Virtual Xbox Controller Driver -->
+      <Component Id="vxinput.sys" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345603}">
+        <File Id="vxinput.sys" 
+              Source="$(var.BuildDir)\drivers\vxinput.sys" 
+              KeyPath="yes" />
+        <File Id="vxinput.inf" 
+              Source="$(var.BuildDir)\drivers\vxinput.inf" />
+        <File Id="vxinput.cat" 
+              Source="$(var.BuildDir)\drivers\vxinput.cat" />
+      </Component>
+      
+      <!-- Virtual Display Driver -->
+      <Component Id="vdisplay.sys" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345604}">
+        <File Id="vdisplay.sys" 
+              Source="$(var.BuildDir)\drivers\vdisplay.sys" 
+              KeyPath="yes" />
+        <File Id="vdisplay.inf" 
+              Source="$(var.BuildDir)\drivers\vdisplay.inf" />
+        <File Id="vdisplay.cat" 
+              Source="$(var.BuildDir)\drivers\vdisplay.cat" />
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Application Components -->
+    <ComponentGroup Id="AppComponents" Directory="APPSFOLDER">
+      <!-- System Tray Application -->
+      <Component Id="KVMTray.exe" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345610}">
+        <File Id="KVMTray.exe" 
+              Source="$(var.BuildDir)\apps\KVMTray.exe" 
+              KeyPath="yes" />
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="ApplicationMenuFolder"
+                  Name="KVM-Drivers Tray"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="KVMTray.exe"
+                  Advertise="yes" />
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="KVM-Drivers Tray"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="KVMTray.exe"
+                  Advertise="yes" />
+      </Component>
+      
+      <!-- Web Client -->
+      <Component Id="WebClient" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345611}">
+        <File Id="index.html" 
+              Source="$(var.BuildDir)\webclient\index.html" 
+              KeyPath="yes" />
+      </Component>
+      
+      <!-- Automation Framework -->
+      <Component Id="AutomationFramework" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345612}">
+        <File Id="kvm_automation.dll" 
+              Source="$(var.BuildDir)\framework\kvm_automation.dll" 
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Service Components -->
+    <ComponentGroup Id="ServiceComponents" Directory="SERVICEFOLDER">
+      <!-- Core Service -->
+      <Component Id="KVMService.exe" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345620}">
+        <File Id="KVMService.exe" 
+              Source="$(var.BuildDir)\service\KVMService.exe" 
+              KeyPath="yes" />
+        <ServiceInstall Id="KVMServiceInstall"
+                        Type="ownProcess"
+                        Name="KVM-Drivers"
+                        DisplayName="KVM-Drivers Core Service"
+                        Description="Core service for KVM virtual drivers"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT AUTHORITY\LocalService">
+          <ServiceDependency Id="RpcSs" />
+        </ServiceInstall>
+        <ServiceControl Id="StartService"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Name="KVM-Drivers"
+                        Wait="yes" />
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Registry Components -->
+    <ComponentGroup Id="RegistryComponents" Directory="TARGETDIR">
+      <Component Id="RegistryEntries" Guid="{A1B2C3D4-1234-5678-90AB-CDEF12345630}">
+        <RegistryKey Root="HKLM" Key="Software\KVM-Drivers">
+          <RegistryValue Type="string" Name="InstallPath" Value="[INSTALLFOLDER]" />
+          <RegistryValue Type="string" Name="Version" Value="1.0.0" />
+          <RegistryValue Type="integer" Name="Installed" Value="1" />
+        </RegistryKey>
+        
+        <!-- Auto-start tray app -->
+        <RegistryKey Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run">
+          <RegistryValue Type="string" Name="KVM-Drivers" 
+                         Value="[APPSFOLDER]KVMTray.exe" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+    
+    <!-- Custom Actions -->
+    <CustomAction Id="InstallDrivers" 
+                  Directory="DRIVERSFOLDER" 
+                  Execute="deferred" 
+                  Impersonate="no" 
+                  Return="check"
+                  ExeCommand="[System64Folder]pnputil.exe /add-driver [DRIVERSFOLDER]vhidkb.inf /install" />
+    
+    <CustomAction Id="UninstallDrivers" 
+                  Directory="DRIVERSFOLDER" 
+                  Execute="deferred" 
+                  Impersonate="no" 
+                  Return="ignore"
+                  ExeCommand="[System64Folder]pnputil.exe /delete-driver oem*.inf /uninstall" />
+    
+    <InstallExecuteSequence>
+      <Custom Action="InstallDrivers" After="InstallFiles">
+        <![CDATA[NOT Installed]]>
+      </Custom>
+      <Custom Action="UninstallDrivers" Before="RemoveFiles">
+        <![CDATA[Installed AND NOT UPGRADINGPRODUCTCODE]]>
+      </Custom>
+    </InstallExecuteSequence>
+    
+    <!-- UI Customization -->
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.ProjectDir)\assets\installer_banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.ProjectDir)\assets\installer_dialog.bmp" />
+    <WixVariable Id="WixUIExclamationIco" Value="$(var.ProjectDir)\assets\warning.ico" />
+    <WixVariable Id="WixUIInfoIco" Value="$(var.ProjectDir)\assets\info.ico" />
+    <WixVariable Id="WixUINewIco" Value="$(var.ProjectDir)\assets\new.ico" />
+    <WixVariable Id="WixUIUpIco" Value="$(var.ProjectDir)\assets\up.ico" />
+    
+    <!-- License -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)\LICENSE.rtf" />
+    
+  </Product>
+</Wix>
