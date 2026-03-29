@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KVM-Drivers Remote Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            overflow: hidden;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: #252525;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        
+        .logo {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 30px;
+            color: #4CAF50;
+        }
+        
+        .connection-panel {
+            margin-bottom: 20px;
+        }
+        
+        .panel-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 10px;
+        }
+        
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 8px 12px;
+            margin-bottom: 10px;
+            background: #333;
+            border: 1px solid #444;
+            color: #fff;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #4CAF50;
+            border: none;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        button.disconnect {
+            background: #f44336;
+        }
+        
+        button.disconnect:hover {
+            background: #da190b;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+        
+        .status-dot.connected {
+            background: #4CAF50;
+            box-shadow: 0 0 10px #4CAF50;
+        }
+        
+        .status-dot.error {
+            background: #f44336;
+        }
+        
+        .stats-panel {
+            margin-top: auto;
+        }
+        
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 13px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .stat-label {
+            color: #888;
+        }
+        
+        .stat-value {
+            color: #4CAF50;
+            font-family: monospace;
+        }
+        
+        /* Main View */
+        .main-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+        
+        .toolbar {
+            height: 50px;
+            background: #252525;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            gap: 15px;
+        }
+        
+        .toolbar-btn {
+            width: auto;
+            padding: 8px 16px;
+            background: #333;
+            font-size: 13px;
+        }
+        
+        .toolbar-btn:hover {
+            background: #444;
+        }
+        
+        .toolbar-btn.active {
+            background: #4CAF50;
+        }
+        
+        .quality-selector {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .quality-selector label {
+            font-size: 13px;
+            color: #888;
+        }
+        
+        .quality-selector select {
+            padding: 5px 10px;
+            background: #333;
+            border: 1px solid #444;
+            color: #fff;
+            border-radius: 4px;
+        }
+        
+        /* Video Container */
+        .video-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0a0a0a;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #videoCanvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            cursor: crosshair;
+        }
+        
+        #videoCanvas.grabbing {
+            cursor: grabbing;
+        }
+        
+        .connection-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #888;
+        }
+        
+        .connection-overlay h2 {
+            margin-bottom: 20px;
+            font-weight: normal;
+        }
+        
+        .disconnected-msg {
+            color: #f44336;
+        }
+        
+        /* Input capture overlay for keyboard focus */
+        .input-capture {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 10;
+            outline: none;
+        }
+        
+        /* Notifications */
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            background: #333;
+            border-left: 4px solid #4CAF50;
+            border-radius: 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 1000;
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.3s ease;
+        }
+        
+        .notification.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        
+        .notification.error {
+            border-left-color: #f44336;
+        }
+        
+        .notification.warning {
+            border-left-color: #ff9800;
+        }
+        
+        /* Settings Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 100;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.show {
+            display: flex;
+        }
+        
+        .modal {
+            background: #252525;
+            border-radius: 8px;
+            padding: 30px;
+            width: 400px;
+            max-width: 90%;
+        }
+        
+        .modal h3 {
+            margin-bottom: 20px;
+            color: #4CAF50;
+        }
+        
+        .modal-row {
+            margin-bottom: 15px;
+        }
+        
+        .modal-row label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 13px;
+            color: #888;
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .modal-buttons button {
+            flex: 1;
+        }
+        
+        button.secondary {
+            background: #555;
+        }
+        
+        button.secondary:hover {
+            background: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo">🖥️ KVM Remote</div>
+            
+            <div class="connection-panel">
+                <div class="panel-title">Connection</div>
+                <input type="text" id="serverHost" placeholder="Host (e.g., localhost)" value="localhost">
+                <input type="text" id="serverPort" placeholder="Port" value="8443">
+                <input type="password" id="authToken" placeholder="Auth Token (optional)">
+                <button id="connectBtn" onclick="toggleConnection()">Connect</button>
+                
+                <div class="status-indicator">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="statusText">Disconnected</span>
+                </div>
+            </div>
+            
+            <div class="stats-panel">
+                <div class="panel-title">Statistics</div>
+                <div class="stat-row">
+                    <span class="stat-label">Resolution:</span>
+                    <span class="stat-value" id="statResolution">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">FPS:</span>
+                    <span class="stat-value" id="statFps">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Latency:</span>
+                    <span class="stat-value" id="statLatency">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Bandwidth:</span>
+                    <span class="stat-value" id="statBandwidth">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Main View -->
+        <div class="main-view">
+            <div class="toolbar">
+                <button class="toolbar-btn active" id="viewBtn" onclick="setMode('view')">View Only</button>
+                <button class="toolbar-btn" id="controlBtn" onclick="setMode('control')">Full Control</button>
+                <button class="toolbar-btn" onclick="sendCtrlAltDel()">Ctrl+Alt+Del</button>
+                <button class="toolbar-btn" onclick="toggleSettings()">Settings</button>
+                
+                <div class="quality-selector">
+                    <label>Quality:</label>
+                    <select id="qualitySelect" onchange="changeQuality()">
+                        <option value="high">High (1080p)</option>
+                        <option value="medium" selected>Medium (720p)</option>
+                        <option value="low">Low (480p)</option>
+                        <option value="adaptive">Adaptive</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="video-container">
+                <canvas id="videoCanvas" width="1280" height="720"></canvas>
+                <div class="connection-overlay" id="overlay">
+                    <h2>Not Connected</h2>
+                    <p>Enter connection details and click Connect</p>
+                </div>
+                <div class="input-capture" id="inputCapture" tabindex="0"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Notification -->
+    <div class="notification" id="notification"></div>
+    
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal">
+            <h3>Connection Settings</h3>
+            
+            <div class="modal-row">
+                <label>
+                    <input type="checkbox" id="tlsEnabled" checked> Use TLS (WebSocket Secure)
+                </label>
+            </div>
+            
+            <div class="modal-row">
+                <label>
+                    <input type="checkbox" id="ignoreCertErrors"> Ignore Certificate Errors (dev only)
+                </label>
+            </div>
+            
+            <div class="modal-row">
+                <label>Input Capture Mode:</label>
+                <select id="inputMode">
+                    <option value="absolute">Absolute (precise)</option>
+                    <option value="relative">Relative (smooth)</option>
+                </select>
+            </div>
+            
+            <div class="modal-row">
+                <label>
+                    <input type="checkbox" id="enableAudio" checked> Enable Audio Forwarding
+                </label>
+            </div>
+            
+            <div class="modal-buttons">
+                <button onclick="saveSettings()">Save</button>
+                <button class="secondary" onclick="toggleSettings()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let ws = null;
+        let isConnected = false;
+        let controlMode = 'view'; // 'view' or 'control'
+        let canvas = document.getElementById('videoCanvas');
+        let ctx = canvas.getContext('2d');
+        let inputCapture = document.getElementById('inputCapture');
+        
+        // Frame decoding
+        let frameDecoder = null;
+        let frameCount = 0;
+        let lastFpsTime = Date.now();
+        
+        // Input tracking
+        let mouseButtons = 0;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupInputHandlers();
+            requestAnimationFrame(updateStats);
+        });
+        
+        // Connection management
+        async function toggleConnection() {
+            if (isConnected) {
+                disconnect();
+            } else {
+                await connect();
+            }
+        }
+        
+        async function connect() {
+            const host = document.getElementById('serverHost').value || 'localhost';
+            const port = document.getElementById('serverPort').value || '8443';
+            const useTls = document.getElementById('tlsEnabled').checked;
+            const ignoreCert = document.getElementById('ignoreCertErrors').checked;
+            const token = document.getElementById('authToken').value;
+            
+            const protocol = useTls ? 'wss' : 'ws';
+            const url = `${protocol}://${host}:${port}`;
+            
+            try {
+                showNotification('Connecting...', 'info');
+                
+                ws = new WebSocket(url);
+                
+                ws.onopen = () => {
+                    isConnected = true;
+                    updateConnectionStatus(true);
+                    showNotification('Connected', 'success');
+                    document.getElementById('connectBtn').textContent = 'Disconnect';
+                    document.getElementById('connectBtn').classList.add('disconnect');
+                    document.getElementById('overlay').style.display = 'none';
+                    
+                    // Send authentication if provided
+                    if (token) {
+                        sendJSON({
+                            jsonrpc: '2.0',
+                            method: 'auth.authenticate',
+                            params: { token: token },
+                            id: 1
+                        });
+                    }
+                    
+                    // Request capabilities
+                    sendJSON({
+                        jsonrpc: '2.0',
+                        method: 'system.get_capabilities',
+                        id: 2
+                    });
+                    
+                    // Start video stream
+                    sendJSON({
+                        jsonrpc: '2.0',
+                        method: 'display.start_stream',
+                        params: {
+                            format: 'h264',
+                            quality: document.getElementById('qualitySelect').value,
+                            fps: 60
+                        },
+                        id: 3
+                    });
+                };
+                
+                ws.onmessage = (event) => {
+                    handleMessage(event.data);
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    showNotification('Connection error', 'error');
+                };
+                
+                ws.onclose = () => {
+                    isConnected = false;
+                    updateConnectionStatus(false);
+                    document.getElementById('connectBtn').textContent = 'Connect';
+                    document.getElementById('connectBtn').classList.remove('disconnect');
+                    document.getElementById('overlay').style.display = 'block';
+                    showNotification('Disconnected', 'warning');
+                };
+                
+            } catch (err) {
+                showNotification('Failed to connect: ' + err.message, 'error');
+            }
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        // Message handling
+        function handleMessage(data) {
+            try {
+                const msg = JSON.parse(data);
+                
+                // Handle JSON-RPC responses
+                if (msg.jsonrpc === '2.0') {
+                    if (msg.method === 'display.frame') {
+                        // Video frame received
+                        handleVideoFrame(msg.params);
+                    } else if (msg.method === 'display.resolution_change') {
+                        // Update canvas size
+                        canvas.width = msg.params.width;
+                        canvas.height = msg.params.height;
+                        document.getElementById('statResolution').textContent = 
+                            `${msg.params.width}x${msg.params.height}`;
+                    } else if (msg.result && msg.result.capabilities) {
+                        // Capabilities response
+                        console.log('Server capabilities:', msg.result.capabilities);
+                    }
+                }
+            } catch (e) {
+                // Binary data (video frame)
+                if (data instanceof Blob) {
+                    handleVideoBlob(data);
+                }
+            }
+        }
+        
+        function handleVideoFrame(params) {
+            // Handle base64 encoded frame
+            if (params.data) {
+                const img = new Image();
+                img.onload = () => {
+                    ctx.drawImage(img, 0, 0);
+                    frameCount++;
+                };
+                img.src = 'data:image/jpeg;base64,' + params.data;
+            }
+        }
+        
+        async function handleVideoBlob(blob) {
+            // Handle binary video data
+            const bitmap = await createImageBitmap(blob);
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            frameCount++;
+        }
+        
+        // Input handling
+        function setupInputHandlers() {
+            // Mouse events
+            inputCapture.addEventListener('mousemove', handleMouseMove);
+            inputCapture.addEventListener('mousedown', handleMouseDown);
+            inputCapture.addEventListener('mouseup', handleMouseUp);
+            inputCapture.addEventListener('wheel', handleWheel, { passive: false });
+            
+            // Keyboard events
+            inputCapture.addEventListener('keydown', handleKeyDown);
+            inputCapture.addEventListener('keyup', handleKeyUp);
+            
+            // Focus handling
+            canvas.addEventListener('click', () => {
+                if (controlMode === 'control') {
+                    inputCapture.focus();
+                }
+            });
+            
+            // Prevent context menu in control mode
+            canvas.addEventListener('contextmenu', (e) => {
+                if (controlMode === 'control') {
+                    e.preventDefault();
+                }
+            });
+        }
+        
+        function handleMouseMove(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+            const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+            
+            // Only send if position changed significantly
+            if (Math.abs(x - lastMouseX) > 1 || Math.abs(y - lastMouseY) > 1) {
+                lastMouseX = x;
+                lastMouseY = y;
+                
+                sendJSON({
+                    jsonrpc: '2.0',
+                    method: 'input.mouse.move',
+                    params: {
+                        mode: 'absolute',
+                        x: x,
+                        y: y
+                    }
+                });
+            }
+        }
+        
+        function handleMouseDown(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            e.preventDefault();
+            inputCapture.focus();
+            
+            const button = e.button === 0 ? 1 : e.button === 2 ? 2 : e.button === 1 ? 3 : 0;
+            mouseButtons |= (1 << (button - 1));
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.mouse.button',
+                params: {
+                    button: button,
+                    pressed: true
+                }
+            });
+        }
+        
+        function handleMouseUp(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            e.preventDefault();
+            
+            const button = e.button === 0 ? 1 : e.button === 2 ? 2 : e.button === 1 ? 3 : 0;
+            mouseButtons &= ~(1 << (button - 1));
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.mouse.button',
+                params: {
+                    button: button,
+                    pressed: false
+                }
+            });
+        }
+        
+        function handleWheel(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            e.preventDefault();
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.mouse.scroll',
+                params: {
+                    vertical: -Math.sign(e.deltaY),
+                    horizontal: Math.sign(e.deltaX)
+                }
+            });
+        }
+        
+        function handleKeyDown(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            e.preventDefault();
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.keyboard.keydown',
+                params: {
+                    keycode: e.keyCode,
+                    modifiers: getModifiers(e)
+                }
+            });
+        }
+        
+        function handleKeyUp(e) {
+            if (!isConnected || controlMode !== 'control') return;
+            e.preventDefault();
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.keyboard.keyup',
+                params: {
+                    keycode: e.keyCode,
+                    modifiers: getModifiers(e)
+                }
+            });
+        }
+        
+        function getModifiers(e) {
+            let mods = 0;
+            if (e.ctrlKey) mods |= 0x01;
+            if (e.shiftKey) mods |= 0x02;
+            if (e.altKey) mods |= 0x04;
+            if (e.metaKey) mods |= 0x08;
+            return mods;
+        }
+        
+        // Helper functions
+        function sendJSON(obj) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(obj));
+            }
+        }
+        
+        function setMode(mode) {
+            controlMode = mode;
+            document.getElementById('viewBtn').classList.toggle('active', mode === 'view');
+            document.getElementById('controlBtn').classList.toggle('active', mode === 'control');
+            
+            if (mode === 'control') {
+                showNotification('Control mode active - click video to capture input', 'info');
+            }
+        }
+        
+        function sendCtrlAltDel() {
+            if (!isConnected) {
+                showNotification('Not connected', 'error');
+                return;
+            }
+            
+            sendJSON({
+                jsonrpc: '2.0',
+                method: 'input.keyboard.combo',
+                params: {
+                    keys: ['ctrl', 'alt', 'delete']
+                }
+            });
+            
+            showNotification('Sent Ctrl+Alt+Del', 'success');
+        }
+        
+        function changeQuality() {
+            const quality = document.getElementById('qualitySelect').value;
+            
+            if (isConnected) {
+                sendJSON({
+                    jsonrpc: '2.0',
+                    method: 'display.set_quality',
+                    params: { quality: quality }
+                });
+                
+                showNotification(`Quality changed to ${quality}`, 'info');
+            }
+        }
+        
+        // Settings modal
+        function toggleSettings() {
+            const modal = document.getElementById('settingsModal');
+            modal.classList.toggle('show');
+        }
+        
+        function saveSettings() {
+            toggleSettings();
+            showNotification('Settings saved', 'success');
+        }
+        
+        // UI updates
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            
+            if (connected) {
+                dot.classList.add('connected');
+                dot.classList.remove('error');
+                text.textContent = 'Connected';
+            } else {
+                dot.classList.remove('connected');
+                text.textContent = 'Disconnected';
+            }
+        }
+        
+        function updateStats() {
+            // Calculate FPS
+            const now = Date.now();
+            const elapsed = now - lastFpsTime;
+            
+            if (elapsed >= 1000) {
+                const fps = Math.round((frameCount * 1000) / elapsed);
+                document.getElementById('statFps').textContent = fps + ' fps';
+                frameCount = 0;
+                lastFpsTime = now;
+            }
+            
+            requestAnimationFrame(updateStats);
+        }
+        
+        function showNotification(message, type = 'info') {
+            const notif = document.getElementById('notification');
+            notif.textContent = message;
+            notif.className = 'notification show ' + type;
+            
+            setTimeout(() => {
+                notif.classList.remove('show');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
