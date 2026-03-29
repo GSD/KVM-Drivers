@@ -274,6 +274,8 @@ This document outlines the phased development approach for building the KVM-Driv
 | 7.5 | Session Management | Multi-session support | Multiple clients can connect |
 | 7.6 | Rate Limiting | Anti-abuse protections | Input flooding prevented |
 | 7.7 | **VNC Server** | RFB 3.8 protocol support | RealVNC/TigerVNC clients can connect |
+| 7.8 | **Web Client** | Browser-based remote client | Connects via WebSocket, no install needed |
+| 7.9 | **Local Automation** | Direct driver interface for same-machine testing | No network stack, YAML test scripts |
 
 ### Technical Tasks
 - [x] Implement WebSocket server (native C++ with driver integration)
@@ -284,6 +286,19 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] Add session multiplexing
 - [x] Implement rate limiting and throttling
 - [x] **Async Networking**: Non-blocking I/O with select() and worker thread pool
+- [x] **Web Client Implementation**:
+  - [x] Browser-based HTML5/JavaScript client
+  - [x] WebSocket connection with TLS support
+  - [x] Video display (canvas with H.264/JPEG decoding)
+  - [x] Keyboard and mouse input capture/forwarding
+  - [x] Quality selector and control modes (view/control)
+  - [x] Connection status and statistics display
+- [x] **Local Automation Mode**:
+  - [x] Direct driver interface (no network stack)
+  - [x] YAML test script execution
+  - [x] Interactive REPL mode (click, type, key commands)
+  - [x] Smoke test suite for driver validation
+  - [x] Performance and latency measurement
 - [ ] **VNC Server Implementation**:
   - [ ] Implement RFB 3.8 protocol handshake
   - [ ] Support VNC authentication (classic password, MS-Logon II)
@@ -359,6 +374,7 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] Design YAML test schema
 - [x] Build test parser and validator
 - [x] Implement action executor (input injection)
+- [x] **Local Automation Engine** (direct driver connection)
 - [ ] Create screen capture and comparison
 - [ ] Build result reporting system
 - [x] Write CI/CD action plugins (GitHub Actions workflow)
@@ -430,7 +446,7 @@ Month 11-13: Milestone 10 (Production)
 | Phase | Criteria | Timeline |
 |-------|----------|----------|
 | **Alpha** | M1-M4 complete (Keyboard + Mouse + Basic UI) | Month 4-5 |
-| **Beta** | M1-M8 complete (All drivers + Remote + Full UI) | Month 9 |
+| **Beta** | M1-M8 complete (All drivers + Remote + Full UI + Web Client) | Month 9 |
 | **GA** | M10 complete (WHQL signed, production ready) | Month 13 |
 
 ---
