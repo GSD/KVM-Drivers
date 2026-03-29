@@ -2,116 +2,347 @@
 
 ## Prerequisites
 
-- Windows 10 or Windows 11 (64-bit)
-- Visual Studio 2022 Community or higher
-- Windows Driver Kit (WDK) for Windows 11
-- Windows SDK
+| Component | Version | Required For |
+|-----------|---------|--------------|
+| Windows | 10/11 64-bit | Building, running drivers |
+| Visual Studio | 2022 Community+ | Compilation |
+| Windows Driver Kit | Windows 11 WDK | Kernel drivers |
+| Windows SDK | 10.0.22621.0+ | Headers, libraries |
+| .NET 6 SDK | 6.0.x | Tray application |
+| Git | 2.35+ | Source control |
+
+### Installing Prerequisites
+
+**Visual Studio 2022 Workloads:**
+- Desktop development with C++
+- Windows Driver development
+
+**WDK Installation:**
+```powershell
+# Download from Microsoft and install
+# https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk
+```
 
 ## Building
 
-### Method 1: Visual Studio
-
-1. Open `KVM-Drivers.sln` in Visual Studio 2022
-2. Select `Release` or `Debug` configuration
-3. Select `x64` platform
-4. Build Solution (Ctrl+Shift+B)
-
-### Method 2: Command Line
+### Quick Build (Command Line)
 
 ```powershell
-# In PowerShell or Command Prompt
 cd P:\KVM-Drivers
-.\scripts\build.bat [Release|Debug]
+.\scripts\build.bat Release all
+```
+
+### Build Options
+
+| Command | Description |
+|---------|-------------|
+| `build.bat Release all` | Build everything (Release) |
+| `build.bat Debug all` | Build everything (Debug) |
+| `build.bat Release drivers` | Build kernel drivers only |
+| `build.bat Release usermode` | Build applications only |
+| `build.bat Release tests` | Build test suite only |
+| `build.bat clean` | Clean all build artifacts |
+
+### Visual Studio Build
+
+1. Open `KVM-Drivers.sln` in Visual Studio 2022
+2. Select Configuration: `Release` or `Debug`
+3. Select Platform: `x64`
+4. Build → Build Solution (Ctrl+Shift+B)
+
+### Build Output Structure
+
+```
+build\Release\
+├── drivers\          # Kernel drivers (.sys, .inf)
+│   ├── vhidkb.sys
+│   ├── vhidmouse.sys
+│   ├── vxinput.sys
+│   └── vdisplay.dll
+├── bin\              # Applications
+│   ├── KVMService.exe
+│   ├── KVMTray.exe
+│   └── remote.dll
+├── tests\            # Test executables
+│   ├── test_keyboard.exe
+│   ├── test_mouse.exe
+│   └── test_harness.exe
+└── logs\             # Build logs
+    ├── vhidkb.log
+    └── ...
 ```
 
 ## Installing Drivers
 
-**IMPORTANT: Requires Administrator privileges**
+**⚠️ WARNING: Requires Administrator privileges**
 
-### Install (Release)
+### Install All Drivers
+
 ```powershell
-.\scripts\install.bat
+# As Administrator
+.\scripts\install.bat Release
 ```
 
-### Install (Debug)
+### Install Individual Drivers
+
 ```powershell
-.\scripts\install.bat Debug
+# Keyboard only
+pnputil /add-driver build\Release\drivers\vhidkb.inf /install
+
+# Mouse only
+pnputil /add-driver build\Release\drivers\vhidmouse.inf /install
+
+# Controller only
+pnputil /add-driver build\Release\drivers\vxinput.inf /install
+
+# Display driver (IDD)
+regsvr32 build\Release\drivers\vdisplay.dll
 ```
 
-### Uninstall
+### Uninstall Drivers
+
 ```powershell
 .\scripts\uninstall.bat
 ```
 
+### Verify Installation
+
+```powershell
+# Check installed drivers
+pnputil /enum-devices /class HIDClass
+
+# Check in Device Manager
+# - Virtual HID Keyboard
+# - Virtual HID Mouse
+# - Virtual Xbox Controller
+# - Virtual Display Monitor
+```
+
 ## Testing
 
-### Keyboard Driver Test
+### Automated Test Harness
 
 ```powershell
 cd build\Release
-test_keyboard.exe
+tests\test_harness.exe
 ```
 
-Options:
-- 1: Inject 'A' key
-- 2: Inject 'Enter' key
-- 3: Inject Ctrl+C combo
-- 4: Reset keyboard
-- 5: Exit
+**Test Coverage:**
+- Keyboard single key injection
+- Keyboard modifier combos (Ctrl+C, etc.)
+- Mouse relative/absolute movement
+- Mouse button clicks
+- Mouse scroll wheel
+- Controller XUSB reports
 
-### Mouse Driver Test
+### Manual Keyboard Test
 
 ```powershell
 cd build\Release
-test_mouse.exe
+tests\test_keyboard.exe
 ```
 
-Options:
-- 1: Move right 100px
-- 2: Move left 100px
-- 3: Left click
-- 4: Scroll up
-- 5: Move to screen center
-- 6: Exit
+Menu options:
+1. Inject 'A' key
+2. Inject 'Enter' key
+3. Inject Ctrl+C combo
+4. Reset keyboard state
+5. Exit
+
+### Manual Mouse Test
+
+```powershell
+cd build\Release
+tests\test_mouse.exe
+```
+
+Menu options:
+1. Move cursor right 100px
+2. Move cursor left 100px
+3. Left click
+4. Scroll up 3 clicks
+5. Move to screen center
+6. Exit
 
 ### VNC Server Test
 
-Connect with any VNC client to `localhost:5900`
+```powershell
+# Start VNC server
+cd build\Release\bin
+KVMService.exe --vnc-port 5900
 
-## Running the System Tray Application
+# Connect with any VNC client to localhost:5900
+```
+
+### WebSocket Protocol Test
 
 ```powershell
-cd build\Release
+# Connect via wscat or similar
+wscat -c ws://localhost:8443
+> {"jsonrpc":"2.0","method":"system.ping","id":1}
+```
+
+## Running the System
+
+### Start Core Service
+
+```powershell
+# As Administrator (for driver access)
+cd build\Release\bin
+KVMService.exe
+```
+
+Service options:
+```
+KVMService.exe [options]
+  --daemon          Run as Windows service
+  --vnc-port N      VNC server port (default: 5900)
+  --ws-port N       WebSocket port (default: 8443)
+  --install         Install as Windows service
+  --uninstall       Uninstall Windows service
+```
+
+### Start System Tray Application
+
+```powershell
+cd build\Release\bin
 KVMTray.exe
 ```
 
-Or run from Visual Studio: Set `tray` project as Startup and press F5.
+Or run from Visual Studio with F5 (set `tray` as startup project).
 
 ## Troubleshooting
 
-### Driver fails to install
-- Ensure Secure Boot is disabled (for test-signed drivers)
-- Check that you're running as Administrator
-- Verify driver signature: `signtool verify /v build\Release\vhidkb.sys`
+### Build Failures
 
-### Driver not found errors
-- Verify drivers are installed: `pnputil /enum-drivers`
-- Check Device Manager for "Virtual HID Keyboard", "Virtual HID Mouse"
-- Try restarting after driver installation
+| Error | Solution |
+|-------|----------|
+| "WDK not found" | Install Windows 11 WDK, check `C:\Program Files (x86)\Windows Kits\10` |
+| "VS not found" | Run `vswhere` to verify installation, install VS 2022 |
+| "signtool failed" | Disable driver signing test mode: `bcdedit /set testsigning on` |
+| "Link errors" | Ensure WDK version matches SDK version |
 
-### Build errors
-- Verify WDK is installed and environment variable `WDK_CONTENTROOT` is set
-- Check that Visual Studio has C++ and Windows Driver development workloads
+### Driver Installation Failures
+
+| Error | Solution |
+|-------|----------|
+| "Access denied" | Run PowerShell/Command Prompt as Administrator |
+| "Driver not signed" | Enable test signing: `bcdedit /set testsigning on` |
+| "Device not found" | Check Device Manager → View → Show hidden devices |
+| "Driver failed to start" | Check Event Viewer → Windows Logs → System |
+
+### Driver Not Working
+
+```powershell
+# 1. Check driver is loaded
+Get-Process | Where-Object {$_.ProcessName -like "*vhid*"}
+
+# 2. Check driver handles are accessible
+$kb = Get-Item "\\.\vhidkb" -ErrorAction SilentlyContinue
+if ($kb) { "Keyboard driver accessible" } else { "Keyboard driver NOT accessible" }
+
+# 3. Verify in Device Manager
+#    - Should show "Virtual HID Keyboard" under HID devices
+#    - No yellow warning triangles
+
+# 4. Test with SendInput fallback
+cd build\Release\tests
+test_harness.exe  # Will show if using driver or SendInput fallback
+```
+
+### Test Failures
+
+| Symptom | Cause | Solution |
+|-----------|-------|----------|
+| Tests inject input but nothing happens | Driver not loaded, using SendInput | Check `test_results.log` for injection mode |
+| Keyboard tests fail | Wrong window focus | Ensure you're testing in a text editor like Notepad |
+| Mouse tests erratic | Screen scaling | Set display scaling to 100% for tests |
+| Controller not detected | No game running | Launch a game or Steam Big Picture |
+
+### Network/Protocol Issues
+
+| Symptom | Solution |
+|---------|----------|
+| "Cannot bind to port" | Check if another service uses 5900/8443: `netstat -ano \| findstr 5900` |
+| TLS handshake fails | Check certificate store, ensure TLS 1.3 enabled |
+| VNC authentication fails | Reset VNC password in tray app settings |
+| WebSocket disconnects | Check firewall rules for port 8443 |
 
 ## Development
 
+### Project Structure
+
+```
+KVM-Drivers/
+├── src/
+│   ├── drivers/           # Kernel drivers
+│   │   ├── vhidkb/       # Virtual HID Keyboard
+│   │   ├── vhidmouse/    # Virtual HID Mouse
+│   │   ├── vxinput/      # Virtual Xbox Controller
+│   │   └── vdisplay/     # Virtual Display (IDD)
+│   ├── usermode/
+│   │   ├── core/         # KVMService, driver_interface
+│   │   ├── remote/       # WebSocket, VNC, TLS
+│   │   ├── encoding/     # NVENC, AMF, QSV encoders
+│   │   ├── video/        # Video pipeline
+│   │   └── tray/         # WPF System Tray App
+│   └── tests/            # Test utilities
+├── scripts/              # Build/install scripts
+├── docs/                 # Documentation
+└── build/               # Build output (generated)
+```
+
 ### Adding New IOCTL Commands
 
-1. Define IOCTL code in `src/drivers/<driver>/<driver>_ioctl.h`
-2. Add handler in `src/drivers/<driver>/<driver>.c`
-3. Update user-mode interface in `src/usermode/core/driver_interface.cpp`
+1. Define IOCTL in `src/drivers/<driver>/<driver>_ioctl.h`:
+```c
+#define IOCTL_MY_NEW_COMMAND CTL_CODE(FILE_DEVICE_VHIDKB, 0x900, METHOD_BUFFERED, FILE_ANY_ACCESS)
+```
 
-### Protocol Extensions
+2. Add handler in `src/drivers/<driver>/<driver>.c`:
+```c
+case IOCTL_MY_NEW_COMMAND:
+    status = MyNewCommandHandler(deviceContext, Request);
+    break;
+```
 
-WebSocket JSON-RPC protocol handlers go in `src/usermode/remote/native/`
-VNC protocol extensions go in `src/usermode/remote/vnc/`
+3. Update user-mode interface in `src/usermode/core/driver_interface.cpp`:
+```cpp
+bool DriverInterface::MyNewCommand(Parameters params) {
+    // Build IOCTL and send
+}
+```
+
+### Debugging Drivers
+
+```powershell
+# Enable kernel debugging (requires debug machine setup)
+bcdedit /debug on
+bcdedit /dbgsettings serial debugport:1 baudrate:115200
+
+# Use WinDbg for kernel debugging
+# Or use DebugView for driver output
+Dbgview.exe  # Capture DbgPrint/KdPrint output
+```
+
+### Performance Testing
+
+```powershell
+# Measure input latency
+$start = Get-Date
+# Inject key
+$end = Get-Date
+($end - $start).TotalMilliseconds
+
+# Profile encoding performance
+KVMService.exe --benchmark-encoding
+```
+
+## CI/CD Integration
+
+See `.github/workflows/build.yml` for GitHub Actions configuration.
+
+Build matrix:
+- Windows Server 2019/2022
+- Debug and Release configurations
+- Automated test execution
