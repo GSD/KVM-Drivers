@@ -1,0 +1,57 @@
+; vhidmouse.inf - Virtual HID Mouse Driver Installation
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Mouse
+ClassGuid={4D36E96F-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+CatalogFile=vhidmouse.cat
+DriverVer=01/01/2025,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+vhidmouse_Device_CopyFiles = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vhidmouse.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%vhidmouse.DeviceDesc%=vhidmouse_Device, Root\vhidmouse
+
+[vhidmouse_Device.NT]
+CopyFiles=vhidmouse_Device_CopyFiles
+
+[vhidmouse_Device.NT.HW]
+AddReg=vhidmouse_AddReg
+
+[vhidmouse_AddReg]
+HKR,,DeviceCharacteristics,0x10001,0x0100
+HKR,,Security,,"D:P(A;;GA;;;BA)(A;;GA;;;SY)"
+
+[vhidmouse_Device_CopyFiles]
+vhidmouse.sys
+
+[vhidmouse_Device.NT.Services]
+AddService = vhidmouse,%SPSVCINST_ASSOCSERVICE%, vhidmouse_Service_Inst
+
+[vhidmouse_Service_Inst]
+DisplayName    = %vhidmouse.SVCDESC%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\vhidmouse.sys
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ProviderName = "KVM-Drivers"
+ManufacturerName = "KVM-Drivers Project"
+DiskName = "Virtual HID Mouse Driver Installation Disk"
+vhidmouse.DeviceDesc = "Virtual HID Mouse Device"
+vhidmouse.SVCDESC = "Virtual HID Mouse Driver Service"

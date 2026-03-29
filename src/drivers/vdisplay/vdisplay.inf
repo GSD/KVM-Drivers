@@ -1,0 +1,65 @@
+; vdisplay.inf - Virtual Display Driver (IDD)
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+CatalogFile=vdisplay.cat
+DriverVer=01/01/2025,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+UMDriverCopy = 12,UMDF
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vdisplay.dll = 1,,
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%vdisplay.DeviceDesc%=vdisplay_Device, Root\vdisplay
+
+[vdisplay_Device.NT]
+CopyFiles=UMDriverCopy
+
+[vdisplay_Device.NT.HW]
+AddReg=vdisplay_AddReg
+
+[vdisplay_AddReg]
+HKR,,DeviceCharacteristics,0x10001,0x0100
+
+[vdisplay_Device.NT.Services]
+AddService = vdisplay,0x00000002, vdisplay_Service_Inst
+
+[vdisplay_Service_Inst]
+DisplayName    = %vdisplay.SVCDESC%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\WUDFRd.sys
+
+[vdisplay_Device.NT.CoInstallers]
+AddReg = CoInstallers_AddReg
+CopyFiles = CoInstallers_CopyFiles
+
+[CoInstallers_AddReg]
+HKR,,CoInstallers32,0x00010000,"WudfCoInstaller.dll"
+
+[CoInstallers_CopyFiles]
+WudfCoInstaller.dll
+
+[UMDriverCopy]
+vdisplay.dll
+
+[Strings]
+ProviderName = "KVM-Drivers"
+ManufacturerName = "KVM-Drivers Project"
+DiskName = "Virtual Display Driver Installation Disk"
+vdisplay.DeviceDesc = "Virtual Display Monitor"
+vdisplay.SVCDESC = "Virtual Display Driver Service"

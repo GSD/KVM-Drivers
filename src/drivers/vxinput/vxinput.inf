@@ -1,0 +1,47 @@
+; vxinput.inf - Virtual Xbox Controller Driver
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+CatalogFile=vxinput.cat
+DriverVer=01/01/2025,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+vxinput_Device_CopyFiles = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vxinput.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%vxinput.DeviceDesc%=vxinput_Device, Root\vxinput
+
+[vxinput_Device.NT]
+CopyFiles=vxinput_Device_CopyFiles
+
+[vxinput_Device.NT.Services]
+AddService = vxinput,%SPSVCINST_ASSOCSERVICE%, vxinput_Service_Inst
+
+[vxinput_Service_Inst]
+DisplayName    = %vxinput.SVCDESC%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\vxinput.sys
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ProviderName = "KVM-Drivers"
+ManufacturerName = "KVM-Drivers Project"
+DiskName = "Virtual Xbox Controller Driver Installation Disk"
+vxinput.DeviceDesc = "Virtual Xbox Controller Bus"
+vxinput.SVCDESC = "Virtual Xbox Controller Driver Service"
