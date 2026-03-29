@@ -369,12 +369,29 @@ This document outlines the phased development approach for building the KVM-Driv
 | 9.4 | Screen Assertions | Visual verification | Screenshot comparison works |
 | 9.5 | Test Results | Result reporting and storage | Pass/fail with evidence |
 | 9.6 | CI/CD Integration | GitHub Actions, Azure DevOps | Tests run in CI pipelines |
+| 9.7 | **C++ Automation Framework** | Plugin-based test framework with handlers | Extensible architecture for custom actions |
+| 9.8 | **C# .NET Wrapper** | C# interop layer for .NET developers | C# projects can use framework |
+| 9.9 | **Application Launcher** | Launch apps, wait for windows, process management | Games launch and are ready for automation |
+| 9.10 | **UI Automation Provider** | MSAA/UIA accessibility integration | Find and click UI elements by name/type |
+| 9.11 | **Screen Analyzer** | OpenCV template matching, Tesseract OCR | Find buttons by image or text on screen |
+| 9.12 | **Game State Detector** | Detect loading, menus, gameplay states | Automation waits for correct game state |
+| 9.13 | **Smart Click Handler** | Multi-method click (accessibility→image→text→coords) | Clicks work regardless of method available |
 
 ### Technical Tasks
 - [x] Design YAML test schema
 - [x] Build test parser and validator
 - [x] Implement action executor (input injection)
 - [x] **Local Automation Engine** (direct driver connection)
+- [x] **C++ Automation Framework** (plugin architecture, ITestActionHandler)
+- [x] **Built-in Action Handlers**: Mouse, Keyboard, Wait, Screenshot
+- [x] **C# .NET Wrapper** (P/Invoke interop, fluent API)
+- [x] **Game Automation Extensions**:
+  - [x] Application Launcher (launch games, wait for window, process management)
+  - [x] UI Automation Provider (MSAA/UIA accessibility, find/click elements)
+  - [x] Screen Analyzer (OpenCV template matching, Tesseract OCR, color detection)
+  - [x] Game State Detector (loading/menu/gameplay detection)
+  - [x] Smart Click Handler (accessibility→image→text→coords fallback)
+  - [x] Automated Gameplay Handler (scripted inputs, random movement)
 - [ ] Create screen capture and comparison
 - [ ] Build result reporting system
 - [x] Write CI/CD action plugins (GitHub Actions workflow)
@@ -435,8 +452,8 @@ Month 2-4:  Milestone 2 (Keyboard) + Milestone 3 (Mouse)
 Month 4-5:  Milestone 4 (Tray Core)
 Month 5-7:  Milestone 5 (Controller) + Milestone 6 (Display)
 Month 7-9:  Milestone 7 (Remote) + Milestone 8 (Tray Full)
-Month 9-11: Milestone 9 (Testing Framework)
-Month 11-13: Milestone 10 (Production)
+Month 9-12: Milestone 9 (Testing Framework + Game Automation)
+Month 12-14: Milestone 10 (Production)
 ```
 
 **Total Estimated Duration**: 11-13 months for full production release
