@@ -1,0 +1,84 @@
+;
+; vhidkb.inf
+; Installation file for Virtual HID Keyboard Driver
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Keyboard
+ClassGuid={4D36E96B-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+CatalogFile=vhidkb.cat
+DriverVer=01/01/2025,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+vhidkb_Device_CopyFiles = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vhidkb.sys = 1,,
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64
+
+[Standard.NTamd64]
+%vhidkb.DeviceDesc%=vhidkb_Device, Root\vhidkb
+
+[vhidkb_Device.NT]
+CopyFiles=vhidkb_Device_CopyFiles
+
+[vhidkb_Device.NT.HW]
+AddReg=vhidkb_AddReg
+
+[vhidkb_AddReg]
+HKR,,DeviceCharacteristics,0x10001,0x0100     ; FILE_DEVICE_SECURE_OPEN
+HKR,,Security,,"D:P(A;;GA;;;BA)(A;;GA;;;SY)" ; Allow admins and system
+
+[vhidkb_Device_CopyFiles]
+vhidkb.sys
+
+;*****************************************
+; Service Section
+;*****************************************
+
+[vhidkb_Device.NT.Services]
+AddService = vhidkb,%SPSVCINST_ASSOCSERVICE%, vhidkb_Service_Inst
+
+[vhidkb_Service_Inst]
+DisplayName    = %vhidkb.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\vhidkb.sys
+
+;*****************************************
+; Upper Filter Installation
+;*****************************************
+
+; To install as an upper filter on existing keyboard devices,
+; add the following registry keys:
+;
+; [HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96B-E325-11CE-BFC1-08002BE10318}]
+; UpperFilters = vhidkb
+;
+; This requires the driver to be signed.
+
+;*****************************************
+; String Definitions
+;*****************************************
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ProviderName = "KVM-Drivers"
+ManufacturerName = "KVM-Drivers Project"
+DiskName = "Virtual HID Keyboard Driver Installation Disk"
+vhidkb.DeviceDesc = "Virtual HID Keyboard Device"
+vhidkb.SVCDESC = "Virtual HID Keyboard Driver Service"

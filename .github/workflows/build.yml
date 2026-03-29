@@ -1,0 +1,35 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v1.3
+      
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@v1.2.0
+      
+    - name: Restore NuGet packages
+      run: nuget restore KVM-Drivers.sln
+      
+    - name: Build Solution (Debug)
+      run: msbuild KVM-Drivers.sln /p:Configuration=Debug /p:Platform=x64 /m
+      
+    - name: Build Solution (Release)
+      run: msbuild KVM-Drivers.sln /p:Configuration=Release /p:Platform=x64 /m
+      
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-output
+        path: build/

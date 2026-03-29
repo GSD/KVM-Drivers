@@ -1,0 +1,24 @@
+<Window x:Class="KVM.Tray.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KVM Control Panel" Height="600" Width="800">
+    <Grid>
+        <TabControl>
+            <TabItem Header="Drivers">
+                <Grid>
+                    <TextBlock Text="Driver Control" FontSize="24" Margin="10"/>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Logs">
+                <Grid>
+                    <TextBlock Text="Log Viewer" FontSize="24" Margin="10"/>
+                </Grid>
+            </TabItem>
+            <TabItem Header="Remote">
+                <Grid>
+                    <TextBlock Text="Connection Manager" FontSize="24" Margin="10"/>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

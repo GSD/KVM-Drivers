@@ -1,0 +1,48 @@
+# Build outputs
+build/
+*.exe
+*.dll
+*.sys
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.cache
+*.ncb
+*.sdf
+ipch/
+
+# Driver build artifacts
+*.cat
+*.inf.tag
+*.stamp
+*.intermediate.manifest
+
+# NuGet
+packages/
+*.nupkg
+
+# WPP tracing
+*.tmh
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+~$*
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+desktop.ini
