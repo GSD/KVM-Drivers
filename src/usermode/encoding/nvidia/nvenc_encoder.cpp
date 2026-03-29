@@ -3,6 +3,8 @@
 #include <nvEncodeAPI.h>
 #include <cuda.h>
 #include <iostream>
+#include <vector>
+#include <cstdint>
 
 #pragma comment(lib, "nvencodeapi.lib")
 #pragma comment(lib, "cuda.lib")
@@ -75,14 +77,110 @@ public:
         return true;
     }
 
-    bool EncodeFrame(void* frameData, void** output, size_t* size) {
-        if (!initialized) return false;
-        // TODO: Full encode implementation
+    bool EncodeFrame(void* nv12Data, void** output, size_t* outputSize) {
+        if (!initialized || !encoder) return false;
+
+        // Register input resource (NV12 format)
+        NV_ENC_REGISTER_RESOURCE regResource = {};
+        regResource.version = NV_ENC_REGISTER_RESOURCE_VER;
+        regResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+        regResource.resourceToRegister = nv12Data;
+        regResource.width = width;
+        regResource.height = height;
+        regResource.pitch = width; // NV12 pitch
+        regResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
+
+        if (nvencFuncs.nvEncRegisterResource(encoder, &regResource) != NV_ENC_SUCCESS) {
+            std::cerr << "Failed to register input resource" << std::endl;
+            return false;
+        }
+
+        // Map resource for encoding
+        NV_ENC_MAP_INPUT_RESOURCE mapResource = {};
+        mapResource.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+        mapResource.registeredResource = regResource.registeredResource;
+
+        if (nvencFuncs.nvEncMapInputResource(encoder, &mapResource) != NV_ENC_SUCCESS) {
+            std::cerr << "Failed to map input resource" << std::endl;
+            nvencFuncs.nvEncUnregisterResource(encoder, regResource.registeredResource);
+            return false;
+        }
+
+        // Create output bitstream buffer if not exists
+        if (!bitstreamBuffer) {
+            NV_ENC_CREATE_BITSTREAM_BUFFER createBitstreamBuffer = {};
+            createBitstreamBuffer.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
+            createBitstreamBuffer.size = 1024 * 1024; // 1MB buffer
+            createBitstreamBuffer.memoryHeap = NV_ENC_MEMORY_HEAP_SYSMEM_CACHED;
+
+            if (nvencFuncs.nvEncCreateBitstreamBuffer(encoder, &createBitstreamBuffer) != NV_ENC_SUCCESS) {
+                std::cerr << "Failed to create bitstream buffer" << std::endl;
+                nvencFuncs.nvEncUnmapInputResource(encoder, mapResource.mappedResource);
+                nvencFuncs.nvEncUnregisterResource(encoder, regResource.registeredResource);
+                return false;
+            }
+            bitstreamBuffer = createBitstreamBuffer.bitstreamBuffer;
+        }
+
+        // Encode frame
+        NV_ENC_PIC_PARAMS picParams = {};
+        picParams.version = NV_ENC_PIC_PARAMS_VER;
+        picParams.inputBuffer = mapResource.mappedResource;
+        picParams.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12;
+        picParams.outputBitstream = bitstreamBuffer;
+        picParams.inputWidth = width;
+        picParams.inputHeight = height;
+        picParams.inputPitch = width;
+        picParams.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR;
+        picParams.pictureType = NV_ENC_PIC_TYPE_IDR;
+        picParams.codecPicParams.h264PicParams.sliceMode = 0;
+        picParams.codecPicParams.h264PicParams.sliceModeData = 0;
+
+        NVENCSTATUS status = nvencFuncs.nvEncEncodePicture(encoder, &picParams);
+        if (status != NV_ENC_SUCCESS) {
+            std::cerr << "nvEncEncodePicture failed: " << status << std::endl;
+            nvencFuncs.nvEncUnmapInputResource(encoder, mapResource.mappedResource);
+            nvencFuncs.nvEncUnregisterResource(encoder, regResource.registeredResource);
+            return false;
+        }
+
+        // Lock bitstream to get encoded data
+        NV_ENC_LOCK_BITSTREAM lockBitstream = {};
+        lockBitstream.version = NV_ENC_LOCK_BITSTREAM_VER;
+        lockBitstream.outputBitstream = bitstreamBuffer;
+
+        status = nvencFuncs.nvEncLockBitstream(encoder, &lockBitstream);
+        if (status != NV_ENC_SUCCESS) {
+            std::cerr << "nvEncLockBitstream failed: " << status << std::endl;
+            nvencFuncs.nvEncUnmapInputResource(encoder, mapResource.mappedResource);
+            nvencFuncs.nvEncUnregisterResource(encoder, regResource.registeredResource);
+            return false;
+        }
+
+        // Copy encoded data to output
+        size_t dataSize = lockBitstream.bitstreamSizeInBytes;
+        if (encodedDataBuffer.size() < dataSize) {
+            encodedDataBuffer.resize(dataSize);
+        }
+        memcpy(encodedDataBuffer.data(), lockBitstream.bitstreamBufferPtr, dataSize);
+
+        *output = encodedDataBuffer.data();
+        *outputSize = dataSize;
+
+        // Cleanup
+        nvencFuncs.nvEncUnlockBitstream(encoder, bitstreamBuffer);
+        nvencFuncs.nvEncUnmapInputResource(encoder, mapResource.mappedResource);
+        nvencFuncs.nvEncUnregisterResource(encoder, regResource.registeredResource);
+
         return true;
     }
 
     void Shutdown() {
         if (initialized && encoder) {
+            if (bitstreamBuffer) {
+                nvencFuncs.nvEncDestroyBitstreamBuffer(encoder, bitstreamBuffer);
+                bitstreamBuffer = nullptr;
+            }
             nvencFuncs.nvEncDestroyEncoder(encoder);
             encoder = nullptr;
             initialized = false;
@@ -94,6 +192,10 @@ private:
     void* cudaContext;
     NV_ENCODE_API_FUNCTION_LIST nvencFuncs;
     bool initialized;
+    int width;
+    int height;
+    void* bitstreamBuffer;
+    std::vector<uint8_t> encodedDataBuffer;
 };
 
 extern "C" {
