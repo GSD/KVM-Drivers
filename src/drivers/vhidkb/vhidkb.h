@@ -13,6 +13,13 @@
 
 #define POOL_TAG 'kbihV'
 
+// HID Device Extension for minidriver
+typedef struct _HID_DEVICE_CONTEXT {
+    // HID class driver context
+    WDFDEVICE Device;
+} HID_DEVICE_CONTEXT, *PHID_DEVICE_CONTEXT;
+
+// Legacy device context (for filter driver mode)
 typedef struct _DEVICE_CONTEXT {
     WDFDEVICE Device;
     WDFQUEUE DefaultQueue;
@@ -27,6 +34,7 @@ typedef struct _DEVICE_CONTEXT {
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, vhidkbGetDeviceContext)
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(HID_DEVICE_CONTEXT, vhidkbGetHidContext)
 
 // Driver callbacks
 NTSTATUS vhidkbEvtDeviceAdd(
@@ -52,7 +60,49 @@ VOID vhidkbEvtDriverContextCleanup(
     _In_ WDFOBJECT DriverObject
 );
 
-// Key injection functions
+// HID Minidriver callbacks
+NTSTATUS vhidkbHidGetDeviceAttributes(
+    _In_ PHID_DEVICE_CONTEXT Context,
+    _Out_ PHID_DEVICE_ATTRIBUTES Attributes
+);
+
+NTSTATUS vhidkbHidGetReportDescriptor(
+    _In_ PHID_DEVICE_CONTEXT Context,
+    _Out_writes_bytes_to_(DescriptorLength, *ActualDescriptorLength) UCHAR* Descriptor,
+    _In_ ULONG DescriptorLength,
+    _Out_ ULONG* ActualDescriptorLength
+);
+
+NTSTATUS vhidkbHidReadReport(
+    _In_ PHID_DEVICE_CONTEXT Context,
+    _In_ WDFREQUEST Request,
+    _Out_writes_bytes_to_(ReportLength, *ActualReportLength) UCHAR* Report,
+    _In_ ULONG ReportLength,
+    _Out_ ULONG* ActualReportLength
+);
+
+NTSTATUS vhidkbHidWriteReport(
+    _In_ PHID_DEVICE_CONTEXT Context,
+    _In_ WDFREQUEST Request,
+    _In_reads_bytes_(ReportLength) UCHAR* Report,
+    _In_ ULONG ReportLength
+);
+
+NTSTATUS vhidkbHidQueryReportType(
+    _In_ PHID_DEVICE_CONTEXT Context,
+    _In_ UCHAR ReportType,
+    _Out_ PHIDP_REPORT_IDS ReportIds
+);
+
+// HID Report submission
+NTSTATUS vhidkbSubmitHidReport(
+    _In_ WDFDEVICE Device,
+    _In_ UCHAR ModifierKeys,
+    _In_ UCHAR* KeyCodes,
+    _In_ UCHAR KeyCount
+);
+
+// Key injection functions (legacy)
 NTSTATUS vhidkbSendHidReport(
     _In_ PDEVICE_CONTEXT DeviceContext,
     _In_ UCHAR ModifierKeys,
