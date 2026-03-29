@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.ComponentModel;
 
 namespace KVM.Tray
 {
@@ -12,12 +13,62 @@ namespace KVM.Tray
     {
         private ObservableCollection<ConnectionInfo> connections;
         private DispatcherTimer refreshTimer;
+        private AppSettings settings;
         
         public MainWindow()
         {
             InitializeComponent();
+            LoadSettings();
             InitializeData();
             SetupTimer();
+            ApplySettings();
+        }
+
+        private void LoadSettings()
+        {
+            settings = SettingsManager.LoadSettings();
+            
+            // Check command line for minimized start
+            string[] args = Environment.GetCommandLineArgs();
+            foreach (string arg in args)
+            {
+                if (arg.Equals("--minimized", StringComparison.OrdinalIgnoreCase))
+                {
+                    settings.StartMinimized = true;
+                    break;
+                }
+            }
+        }
+
+        private void ApplySettings()
+        {
+            // Apply network settings
+            VncPort.Text = settings.VncPort.ToString();
+            WsPort.Text = settings.WebSocketPort.ToString();
+            VncRequireAuth.IsChecked = settings.VncRequireAuth;
+            UseTls.IsChecked = settings.UseTls;
+            
+            // Apply driver auto-start if enabled
+            if (settings.AutoStartDrivers)
+            {
+                AutoStartDrivers();
+            }
+            
+            // Minimize if requested
+            if (settings.StartMinimized)
+            {
+                WindowState = WindowState.Minimized;
+                Hide();
+            }
+        }
+
+        private void AutoStartDrivers()
+        {
+            // Auto-start enabled drivers
+            if (settings.KeyboardEnabled) StartDriver("Keyboard", KeyboardStatus, KeyboardState, null);
+            if (settings.MouseEnabled) StartDriver("Mouse", MouseStatus, MouseState, null);
+            if (settings.ControllerEnabled) StartDriver("Controller", ControllerStatus, ControllerState, null);
+            if (settings.DisplayEnabled) StartDriver("Display", DisplayStatus, DisplayState, null);
         }
 
         private void InitializeData()
@@ -44,14 +95,13 @@ namespace KVM.Tray
 
         private void RefreshTimer_Tick(object sender, EventArgs e)
         {
-            // Update driver status indicators
             UpdateDriverStatus();
         }
 
         private void UpdateDriverStatus()
         {
-            // TODO: Check actual driver status via service
-            // For now, just animate or refresh UI
+            // Check actual driver status via service or driver interface
+            // For now, just UI refresh
         }
 
         // Driver Control Events
@@ -82,20 +132,51 @@ namespace KVM.Tray
             
             if (isRunning)
             {
-                // Stop driver
-                statusIndicator.Fill = Brushes.Gray;
-                stateText.Text = "Stopped";
-                toggleButton.Content = "Start";
-                AppendLog($"Driver '{driverName}' stopped");
+                StopDriver(driverName, statusIndicator, stateText, toggleButton);
             }
             else
             {
-                // Start driver
-                statusIndicator.Fill = Brushes.Green;
-                stateText.Text = "Running";
-                toggleButton.Content = "Stop";
-                AppendLog($"Driver '{driverName}' started");
+                StartDriver(driverName, statusIndicator, stateText, toggleButton);
             }
+            
+            // Save driver state to settings
+            SaveDriverState(driverName, !isRunning);
+        }
+        
+        private void StartDriver(string driverName, Ellipse statusIndicator, 
+            TextBlock stateText, Button toggleButton)
+        {
+            // Update UI
+            if (statusIndicator != null) statusIndicator.Fill = Brushes.Green;
+            if (stateText != null) stateText.Text = "Running";
+            if (toggleButton != null) toggleButton.Content = "Stop";
+            
+            // TODO: Actual driver start via service
+            AppendLog($"Driver '{driverName}' started");
+        }
+        
+        private void StopDriver(string driverName, Ellipse statusIndicator, 
+            TextBlock stateText, Button toggleButton)
+        {
+            // Update UI
+            if (statusIndicator != null) statusIndicator.Fill = Brushes.Gray;
+            if (stateText != null) stateText.Text = "Stopped";
+            if (toggleButton != null) toggleButton.Content = "Start";
+            
+            // TODO: Actual driver stop via service
+            AppendLog($"Driver '{driverName}' stopped");
+        }
+        
+        private void SaveDriverState(string driverName, bool running)
+        {
+            switch (driverName)
+            {
+                case "Keyboard": settings.KeyboardEnabled = running; break;
+                case "Mouse": settings.MouseEnabled = running; break;
+                case "Controller": settings.ControllerEnabled = running; break;
+                case "Display": settings.DisplayEnabled = running; break;
+            }
+            SettingsManager.SaveSettings(settings);
         }
 
         // Log Events
@@ -106,8 +187,19 @@ namespace KVM.Tray
 
         private void ExportLogs_Click(object sender, RoutedEventArgs e)
         {
-            // TODO: Export logs to file
-            MessageBox.Show("Logs exported to kvmlogs.txt", "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            try
+            {
+                string logPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "KVM-Drivers", "kvmlogs.txt");
+                
+                System.IO.File.WriteAllText(logPath, LogViewer.Text);
+                MessageBox.Show($"Logs exported to {logPath}", "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to export logs: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         public void AppendLog(string message)
@@ -117,12 +209,19 @@ namespace KVM.Tray
             {
                 LogViewer.AppendText($"[{timestamp}] {message}\r\n");
                 LogViewer.ScrollToEnd();
+                
+                // Limit log buffer
+                if (LogViewer.Text.Length > 100000)
+                {
+                    LogViewer.Text = LogViewer.Text.Substring(LogViewer.Text.Length - 50000);
+                }
             });
         }
 
         // Remote Events
         private void RestartServer_Click(object sender, RoutedEventArgs e)
         {
+            // TODO: Actually restart server
             MessageBox.Show("Server restarted", "Restart", MessageBoxButton.OK, MessageBoxImage.Information);
             AppendLog("Remote server restarted");
         }
@@ -141,24 +240,105 @@ namespace KVM.Tray
         // Settings Events
         private void SaveSettings_Click(object sender, RoutedEventArgs e)
         {
-            // TODO: Save settings to config file
-            MessageBox.Show("Settings saved", "Save", MessageBoxButton.OK, MessageBoxImage.Information);
-            AppendLog("Settings saved");
+            // Update settings from UI
+            if (int.TryParse(VncPort.Text, out int vncPort))
+                settings.VncPort = vncPort;
+            
+            if (int.TryParse(WsPort.Text, out int wsPort))
+                settings.WebSocketPort = wsPort;
+                
+            settings.VncRequireAuth = VncRequireAuth.IsChecked ?? true;
+            settings.UseTls = UseTls.IsChecked ?? true;
+            settings.AutoStartWithWindows = AutoStartCheckBox.IsChecked ?? false;
+            settings.MinimizeToTray = MinimizeToTrayCheckBox.IsChecked ?? true;
+            
+            // Save to disk
+            if (SettingsManager.SaveSettings(settings))
+            {
+                // Set auto-start registry
+                SettingsManager.SetAutoStartWithWindows(settings.AutoStartWithWindows);
+                
+                MessageBox.Show("Settings saved successfully", "Save", MessageBoxButton.OK, MessageBoxImage.Information);
+                AppendLog("Settings saved");
+            }
+            else
+            {
+                MessageBox.Show("Failed to save settings", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void ResetSettings_Click(object sender, RoutedEventArgs e)
         {
-            VncPort.Text = "5900";
-            WsPort.Text = "8443";
-            VncRequireAuth.IsChecked = true;
-            UseTls.IsChecked = true;
-            AppendLog("Settings reset to defaults");
+            if (MessageBox.Show("Reset all settings to defaults?", "Confirm", 
+                MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+            {
+                SettingsManager.ResetToDefaults();
+                settings = SettingsManager.LoadSettings();
+                ApplySettings();
+                AppendLog("Settings reset to defaults");
+            }
         }
 
-        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        private void ImportSettings_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                Title = "Import Settings"
+            };
+            
+            if (dialog.ShowDialog() == true)
+            {
+                if (SettingsManager.ImportSettings(dialog.FileName))
+                {
+                    settings = SettingsManager.LoadSettings();
+                    ApplySettings();
+                    MessageBox.Show("Settings imported successfully", "Import", MessageBoxButton.OK, MessageBoxImage.Information);
+                    AppendLog("Settings imported");
+                }
+                else
+                {
+                    MessageBox.Show("Failed to import settings", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void ExportSettings_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                Title = "Export Settings",
+                FileName = "kvm-settings.json"
+            };
+            
+            if (dialog.ShowDialog() == true)
+            {
+                if (SettingsManager.ExportSettings(dialog.FileName))
+                {
+                    MessageBox.Show("Settings exported successfully", "Export", MessageBoxButton.OK, MessageBoxImage.Information);
+                    AppendLog("Settings exported");
+                }
+                else
+                {
+                    MessageBox.Show("Failed to export settings", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
         {
             refreshTimer?.Stop();
             base.OnClosing(e);
+        }
+        
+        protected override void OnStateChanged(EventArgs e)
+        {
+            if (WindowState == WindowState.Minimized && settings.MinimizeToTray)
+            {
+                Hide();
+            }
+            base.OnStateChanged(e);
         }
     }
 
