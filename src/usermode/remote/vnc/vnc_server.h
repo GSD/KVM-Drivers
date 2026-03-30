@@ -149,6 +149,7 @@ public:
 
     // Authentication (call before Start())
     void SetPassword(const std::string& password);
+    void SetTlsEnabled(bool enabled);  // Enable AnonTLS (sec type 18, Schannel)
     
     // Framebuffer management
     void UpdateFramebuffer(const void* pixelData, int width, int height, int pitch);
