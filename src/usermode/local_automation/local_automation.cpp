@@ -11,6 +11,7 @@
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#include <cmath>
 #include <yaml-cpp/yaml.h>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -411,38 +412,6 @@ private:
         return result;
     }
     
-    bool ExecuteAssertions(const YAML::Node& assertions) {
-        for (const auto& assertion : assertions) {
-            std::string type = assertion["type"].as<std::string>("");
-            
-            if (type == "display.compare") {
-                std::string ref = assertion["reference"].as<std::string>("");
-                std::string actual = assertion["actual"].as<std::string>("");
-                double tolerance = assertion["tolerance"].as<double>(0.02);
-                
-                std::cout << "  Assert: display.compare(" << ref << ", " << actual << ")\n";
-                
-                // TODO: Implement actual image comparison
-                bool match = true;  // Placeholder
-                
-                if (!match) {
-                    std::cerr << "    FAILED: Image mismatch\n";
-                    testFailed_++;
-                    if (!assertion["continue_on_fail"].as<bool>(false)) {
-                        return false;
-                    }
-                } else {
-                    std::cout << "    PASSED\n";
-                    testPassed_++;
-                }
-                
-            } else {
-                std::cout << "  Unknown assertion type: " << type << "\n";
-            }
-        }
-        return true;
-    }
-    
     // Helper methods
     int KeyNameToCode(const std::string& name) {
         static std::map<std::string, int> keyMap = {
@@ -616,13 +585,98 @@ private:
     }
     
     bool TestController() {
-        // TODO: Implement controller test
-        return true;
+        XUSB_REPORT report = {};
+        report.bReportId     = 0x00;
+        report.bSize         = sizeof(XUSB_REPORT);
+        report.wButtons      = 0x0001;  // D-pad Up
+        report.bLeftTrigger  = 128;
+        report.bRightTrigger = 128;
+        report.sThumbLX      = 16000;
+        report.sThumbLY      = 0;
+        report.sThumbRX      = 0;
+        report.sThumbRY      = 0;
+        bool ok = driverInterface_->InjectControllerReport(report);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Release
+        report = {};
+        report.bReportId = 0x00;
+        report.bSize     = sizeof(XUSB_REPORT);
+        ok &= driverInterface_->InjectControllerReport(report);
+        return ok;
     }
-    
+
     bool TestDisplay() {
-        // TODO: Implement display test
-        return true;
+        // Capture a screenshot and verify at least 1% of pixels are non-black
+        std::string path = "display_test_capture.png";
+        if (!TakeScreenshot(path)) return false;
+
+        // Load the saved PNG and sample pixels using GDI+
+        using namespace Gdiplus;
+        GdiplusStartupInput gpIn; ULONG_PTR gpTok = 0;
+        GdiplusStartup(&gpTok, &gpIn, NULL);
+
+        std::wstring wPath(path.begin(), path.end());
+        Bitmap* bmp = Bitmap::FromFile(wPath.c_str());
+        bool ok = false;
+        if (bmp && bmp->GetLastStatus() == Ok) {
+            UINT w = bmp->GetWidth(), h = bmp->GetHeight();
+            UINT nonBlack = 0, total = w * h;
+            for (UINT y = 0; y < h; y += 10) {
+                for (UINT x = 0; x < w; x += 10) {
+                    Color c; bmp->GetPixel((INT)x, (INT)y, &c);
+                    if (c.GetR() > 8 || c.GetG() > 8 || c.GetB() > 8) nonBlack++;
+                }
+            }
+            double frac = (double)nonBlack / (double)((total + 99) / 100);
+            ok = (frac >= 0.01);  // At least 1% non-black pixels
+            std::cout << "    Display pixels non-black: "
+                      << (int)(frac * 100) << "%\n";
+        }
+        delete bmp;
+        GdiplusShutdown(gpTok);
+        return ok;
+    }
+
+    // Pixel-diff comparison of two PNG files; returns true if RMSE <= tolerance
+    static bool CompareImages(const std::string& ref,
+                              const std::string& actual,
+                              double tolerance) {
+        using namespace Gdiplus;
+        GdiplusStartupInput gpIn; ULONG_PTR gpTok = 0;
+        GdiplusStartup(&gpTok, &gpIn, NULL);
+
+        std::wstring wRef(ref.begin(), ref.end());
+        std::wstring wAct(actual.begin(), actual.end());
+        Bitmap* bRef = Bitmap::FromFile(wRef.c_str());
+        Bitmap* bAct = Bitmap::FromFile(wAct.c_str());
+
+        bool match = false;
+        if (bRef && bAct && bRef->GetLastStatus() == Ok && bAct->GetLastStatus() == Ok) {
+            UINT w = bRef->GetWidth(), h = bRef->GetHeight();
+            double sumSq = 0; UINT count = 0;
+            for (UINT y = 0; y < h; y += 4) {
+                for (UINT x = 0; x < w; x += 4) {
+                    UINT ax = x * bAct->GetWidth()  / w;
+                    UINT ay = y * bAct->GetHeight() / h;
+                    Color cr, ca;
+                    bRef->GetPixel((INT)x, (INT)y, &cr);
+                    bAct->GetPixel((INT)ax, (INT)ay, &ca);
+                    auto d = [](int a, int b) { return (double)(a-b)*(a-b); };
+                    sumSq += d(cr.GetR(), ca.GetR()) +
+                             d(cr.GetG(), ca.GetG()) +
+                             d(cr.GetB(), ca.GetB());
+                    count++;
+                }
+            }
+            double rmse = (count > 0) ? std::sqrt(sumSq / (count * 3 * 255.0 * 255.0)) : 1.0;
+            match = (rmse <= tolerance);
+            std::cout << "    Image RMSE: " << rmse << " (tol=" << tolerance << ")\n";
+        } else {
+            std::cerr << "    CompareImages: failed to load PNG files\n";
+        }
+        delete bRef; delete bAct;
+        GdiplusShutdown(gpTok);
+        return match;
     }
     
     bool TestPerformance() {

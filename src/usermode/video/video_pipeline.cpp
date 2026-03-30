@@ -133,6 +133,21 @@ public:
     }
 
     // Get encoded packet for streaming
+    // Push a test-pattern frame immediately into the capture queue
+    // (called from IddVideoBridge when no real IDD frame is available)
+    void SubmitTestFrame() {
+        VideoFrame frame;
+        GenerateTestPattern(frame);
+        {
+            std::unique_lock<std::mutex> lock(captureMutex);
+            while (captureQueue.size() >= maxCaptureQueueSize)
+                captureQueue.pop();
+            captureQueue.push(std::move(frame));
+            framesCaptured++;
+        }
+        frameAvailable.notify_one();
+    }
+
     bool GetEncodedPacket(VideoPacket& packet, DWORD timeoutMs = 100) {
         std::unique_lock<std::mutex> lock(encodedMutex);
         
@@ -422,7 +437,38 @@ private:
         }
     }
 
+    // Convert BGRA (4 bytes/pixel) to planar NV12 (Y plane + interleaved UV plane)
+    // nv12 must be pre-allocated: width * height * 3 / 2 bytes
+    static void ConvertBGRAtoNV12(const BYTE* bgra, BYTE* nv12, int width, int height) {
+        BYTE* yPlane  = nv12;
+        BYTE* uvPlane = nv12 + (size_t)width * height;
+
+        for (int row = 0; row < height; row++) {
+            for (int col = 0; col < width; col++) {
+                const BYTE* px = bgra + ((size_t)row * width + col) * 4;
+                BYTE b = px[0], g = px[1], r = px[2];
+
+                // BT.601 limited-range
+                int y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                yPlane[(size_t)row * width + col] = (BYTE)y;
+
+                // UV sub-sampled 2x2: only write on even rows/cols
+                if ((row & 1) == 0 && (col & 1) == 0) {
+                    // Average over 2x2 block (simple — row/col are both even)
+                    int cb = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                    int cr = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                    size_t uvOff = ((size_t)(row / 2) * width) + col;
+                    uvPlane[uvOff]     = (BYTE)cb;
+                    uvPlane[uvOff + 1] = (BYTE)cr;
+                }
+            }
+        }
+    }
+
     void EncodeLoop() {
+        // Reusable NV12 conversion buffer
+        std::vector<BYTE> nv12Buf;
+
         while (running) {
             VideoFrame frame;
             
@@ -439,22 +485,40 @@ private:
                 captureQueue.pop();
             }
 
-            // Convert to NV12 and encode
-            // For now, we'll just pass the raw frame (this is simplified)
-            // In production, convert BGRA to NV12 using D3D11 video processor or compute shader
-            
             auto encodeStart = std::chrono::steady_clock::now();
 
             VideoPacket packet;
             packet.timestamp = frame.timestamp;
             packet.isKeyFrame = frame.isKeyFrame;
 
-            // Placeholder: copy raw data (would be encoded in production)
-            // In production: convert BGRA to NV12, then encode with hardware encoder
-            packet.data = std::move(frame.data);
+            // Attempt hardware encoding via EncoderManager
+            bool encoded = false;
+            if (encoderManager && !frame.data.empty()) {
+                size_t nv12Size = (size_t)frame.width * frame.height * 3 / 2;
+                if (nv12Buf.size() < nv12Size) nv12Buf.resize(nv12Size);
+
+                ConvertBGRAtoNV12(frame.data.data(), nv12Buf.data(),
+                    (int)frame.width, (int)frame.height);
+
+                void* encodedData  = nullptr;
+                size_t encodedSize = 0;
+                if (encoderManager->EncodeFrame(nv12Buf.data(), &encodedData, &encodedSize)
+                        && encodedData && encodedSize > 0) {
+                    packet.data.assign(
+                        static_cast<BYTE*>(encodedData),
+                        static_cast<BYTE*>(encodedData) + encodedSize);
+                    encoded = true;
+                }
+            }
+
+            // Fallback: pass raw BGRA when encoder unavailable or failed
+            if (!encoded) {
+                packet.data = std::move(frame.data);
+            }
 
             auto encodeEnd = std::chrono::steady_clock::now();
             auto encodeTime = std::chrono::duration_cast<std::chrono::milliseconds>(encodeEnd - encodeStart);
+            (void)encodeTime;
 
             // Queue encoded packet
             {

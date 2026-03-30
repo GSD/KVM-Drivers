@@ -146,12 +146,40 @@ static VOID LoggerWriteToDebugger(PLOG_ENTRY Entry)
         Entry->Message));
 }
 
-// Write to ETW (placeholder for actual ETW implementation)
+// Kernel ETW provider GUID: {B3D5A9B0-7C4E-4B6A-9A3D-1F2E3C4D5E6F}
+// Must match the provider registered in connection_security.h (user-mode side)
+static REGHANDLE g_EtwHandle = (REGHANDLE)0;
+static const GUID g_KvmEtwGuid = {
+    0xB3D5A9B0, 0x7C4E, 0x4B6A,
+    {0x9A, 0x3D, 0x1F, 0x2E, 0x3C, 0x4D, 0x5E, 0x6F}
+};
+
+static VOID LoggerEnsureEtwRegistered(VOID)
+{
+    if (g_EtwHandle == (REGHANDLE)0) {
+        EtwRegister(&g_KvmEtwGuid, NULL, NULL, &g_EtwHandle);
+    }
+}
+
 static VOID LoggerWriteToEtw(PLOG_ENTRY Entry)
 {
-    // TODO: Implement ETW event writing
-    // This would use TraceEvents() macros or EtwWrite()
-    UNREFERENCED_PARAMETER(Entry);
+    LoggerEnsureEtwRegistered();
+    if (g_EtwHandle == (REGHANDLE)0) return;
+
+    EVENT_DESCRIPTOR evtDesc;
+    // Level 4=INFO, 3=WARN, 2=ERROR, 1=CRITICAL
+    UCHAR etlLevel = (Entry->Level >= LOG_LEVEL_ERROR) ? 2 :
+                     (Entry->Level >= LOG_LEVEL_WARNING) ? 3 : 4;
+    EventDescCreate(&evtDesc, 1, 0, 0, etlLevel, 0, 0, 0);
+
+    // Log component + message as two string fields
+    EVENT_DATA_DESCRIPTOR data[2];
+    EventDataDescCreate(&data[0], Entry->Component,
+        (ULONG)(strlen(Entry->Component) + 1));
+    EventDataDescCreate(&data[1], Entry->Message,
+        (ULONG)(strlen(Entry->Message)  + 1));
+
+    EtwWrite(g_EtwHandle, &evtDesc, NULL, 2, data);
 }
 
 // Get recent log entries

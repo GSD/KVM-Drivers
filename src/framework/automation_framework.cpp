@@ -8,6 +8,10 @@
 #include <filesystem>
 #include <thread>
 #include <json/json.h>
+#include <windows.h>
+#include <gdiplus.h>
+
+#pragma comment(lib, "gdiplus.lib")
 
 namespace KVMDrivers {
 namespace Automation {
@@ -312,8 +316,34 @@ ActionResult MouseActionHandler::HandleMouseScroll(const TestStep& step, Automat
 }
 
 ActionResult MouseActionHandler::HandleMouseDrag(const TestStep& step, AutomationContext& context) {
-    // TODO: Implement drag operation
-    return ActionResult::Fail("Drag not yet implemented");
+    auto getInt = [&](const char* key, int def = 0) -> int {
+        auto it = step.parameters.find(key);
+        return it != step.parameters.end() ? std::stoi(it->second) : def;
+    };
+    int fromX  = getInt("from_x"); int fromY  = getInt("from_y");
+    int toX    = getInt("to_x");   int toY    = getInt("to_y");
+    int steps  = std::max(1, getInt("steps", 20));
+    int holdMs = getInt("hold_ms", 50);
+
+    if (!context.driverInterface) return ActionResult::Fail("Driver interface not available");
+
+    context.driverInterface->InjectMouseMove(fromX, fromY, true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+    context.driverInterface->InjectMouseButton(VMOUSE_BUTTON_LEFT, true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+
+    for (int i = 1; i <= steps; i++) {
+        int x = fromX + (toX - fromX) * i / steps;
+        int y = fromY + (toY - fromY) * i / steps;
+        context.driverInterface->InjectMouseMove(x, y, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+    context.driverInterface->InjectMouseButton(VMOUSE_BUTTON_LEFT, false);
+
+    return ActionResult::Ok("Dragged from (" + std::to_string(fromX) + "," + std::to_string(fromY) +
+                            ") to (" + std::to_string(toX) + "," + std::to_string(toY) + ")");
 }
 
 // ==================== KeyboardActionHandler Implementation ====================
@@ -534,9 +564,36 @@ ActionResult ScreenshotActionHandler::Execute(const TestStep& step, AutomationCo
 }
 
 bool ScreenshotActionHandler::CaptureScreen(const std::string& filepath) {
-    // TODO: Implement actual screen capture using GDI or DXGI
-    // For now, return success
-    return true;
+    using namespace Gdiplus;
+    GdiplusStartupInput gpIn; ULONG_PTR gpTok = 0;
+    GdiplusStartup(&gpTok, &gpIn, NULL);
+
+    int w = GetSystemMetrics(SM_CXSCREEN);
+    int h = GetSystemMetrics(SM_CYSCREEN);
+    HDC scr = GetDC(NULL);
+    HDC mem = CreateCompatibleDC(scr);
+    HBITMAP hBmp = CreateCompatibleBitmap(scr, w, h);
+    HBITMAP hOld = (HBITMAP)SelectObject(mem, hBmp);
+    BitBlt(mem, 0, 0, w, h, scr, 0, 0, SRCCOPY);
+    SelectObject(mem, hOld);
+
+    UINT   num = 0, sz = 0;
+    GetImageEncodersSize(&num, &sz);
+    std::vector<BYTE> buf(sz);
+    ImageCodecInfo* pci = reinterpret_cast<ImageCodecInfo*>(buf.data());
+    GetImageEncoders(num, sz, pci);
+    CLSID clsid = {};
+    for (UINT i = 0; i < num; i++) {
+        if (wcscmp(pci[i].MimeType, L"image/png") == 0) { clsid = pci[i].Clsid; break; }
+    }
+
+    Bitmap bmp(hBmp, NULL);
+    std::wstring wf(filepath.begin(), filepath.end());
+    bool ok = (bmp.Save(wf.c_str(), &clsid, NULL) == Ok);
+
+    DeleteDC(mem); ReleaseDC(NULL, scr); DeleteObject(hBmp);
+    GdiplusShutdown(gpTok);
+    return ok;
 }
 
 // ==================== TestRunner Implementation ====================
@@ -748,9 +805,18 @@ StepResult TestRunner::ExecuteSingleStep(const TestStep& step) {
     result.duration = std::chrono::duration_cast<std::chrono::milliseconds>(stepEnd - stepStart);
     
     // Capture screenshot on failure if configured
-    if (!result.actionResult.success && context_.currentTestConfig && 
-        context_.currentTestConfig->captureScreenshots) {
-        // TODO: Capture screenshot
+    if (!result.actionResult.success && context_.currentTestConfig &&
+            context_.currentTestConfig->captureScreenshots) {
+        auto* sh = dynamic_cast<ScreenshotActionHandler*>(
+            FindHandler(ActionType::Screenshot).get());
+        if (sh) {
+            std::string path = "./screenshots/fail_step" +
+                std::to_string(result.stepId) + "_" +
+                Utils::GetTimestamp() + ".png";
+            Utils::EnsureDirectory("./screenshots");
+            sh->CaptureScreen(path);
+            result.actionResult.message += " [screenshot: " + path + "]";
+        }
     }
     
     return result;
