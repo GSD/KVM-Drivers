@@ -6,8 +6,11 @@
 #include <iostream>
 #include <cstring>
 #include <zlib.h>
+#include <bcrypt.h>
 #include "../../../common/adaptive_quality.h"
 #include "../../core/driver_interface.h"
+
+#pragma comment(lib, "bcrypt.lib")
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -184,6 +187,48 @@ struct ClientInputState {
     LONG  lastY = 0;
 };
 
+// Reverse bits of a byte (required by VNC DES key setup)
+static UINT8 VncReverseBits(UINT8 b) {
+    b = (UINT8)(((b >> 1) & 0x55u) | ((b & 0x55u) << 1));
+    b = (UINT8)(((b >> 2) & 0x33u) | ((b & 0x33u) << 2));
+    b = (UINT8)(((b >> 4) & 0x0Fu) | ((b & 0x0Fu) << 4));
+    return b;
+}
+
+// VNC DES: encrypt 16-byte challenge with bit-reversed 8-byte password key (ECB mode)
+static bool VncDesEncrypt(const UINT8 challenge[16], const char* password, UINT8 response[16]) {
+    // Build 8-byte DES key from password with bit-reversal
+    UINT8 key[8] = {0};
+    for (int i = 0; i < 8 && password[i]; i++) {
+        key[i] = VncReverseBits((UINT8)password[i]);
+    }
+
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    bool success = false;
+
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_DES_ALGORITHM, NULL, 0)))
+        return false;
+
+    // ECB mode - no IV
+    BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
+        (PUCHAR)BCRYPT_CHAIN_MODE_ECB, sizeof(BCRYPT_CHAIN_MODE_ECB), 0);
+
+    if (BCRYPT_SUCCESS(BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0, key, 8, 0))) {
+        ULONG cbResult = 0;
+        // Copy challenge so we can encrypt in-place (BCrypt requires mutable input)
+        UINT8 plaintext[16];
+        memcpy(plaintext, challenge, 16);
+        if (BCRYPT_SUCCESS(BCryptEncrypt(hKey, plaintext, 16, NULL, NULL, 0,
+                response, 16, &cbResult, 0))) {
+            success = true;
+        }
+        BCryptDestroyKey(hKey);
+    }
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    return success;
+}
+
 class VncServerImpl {
 public:
     VncServerImpl(int port = 5900) 
@@ -195,6 +240,8 @@ public:
         driverInterface_ = new DriverInterface();
         driverInterface_->Initialize();
     }
+
+    void SetPassword(const std::string& pw) { password_ = pw; }
 
     ~VncServerImpl() {
         delete driverInterface_;
@@ -287,6 +334,7 @@ private:
 
     // Driver interface for input injection
     DriverInterface* driverInterface_;
+    std::string password_;  // Empty = no auth required
 
     void AcceptLoop() {
         while (running_) {
@@ -355,17 +403,33 @@ private:
         }
 
         {
-            // Security (None)
-            char secTypes[] = { 1, 1 };  // 1 type, type 1 = None
-            send(clientSocket, secTypes, 2, 0);
+            // Security negotiation: offer VNCAuth (2) if password set, else None (1)
+            if (password_.empty()) {
+                char secTypes[] = { 1, (char)RFB::SecTypeNone };
+                send(clientSocket, secTypes, 2, 0);
 
-            char clientChoice;
-            if (!RecvAll(clientSocket, &clientChoice, 1)) goto cleanup;
-            std::cout << "[VNC] Client chose security type: " << (int)clientChoice << std::endl;
+                char clientChoice;
+                if (!RecvAll(clientSocket, &clientChoice, 1)) goto cleanup;
+                std::cout << "[VNC] " << clientIP << " chose no-auth" << std::endl;
 
-            // Security result (OK)
-            UINT32 secStatus = 0;
-            send(clientSocket, (char*)&secStatus, 4, 0);
+                // Security result OK
+                UINT32 secStatus = 0;
+                send(clientSocket, (char*)&secStatus, 4, 0);
+            } else {
+                // Offer VNCAuth
+                char secTypes[] = { 1, (char)RFB::SecTypeVNCAuth };
+                send(clientSocket, secTypes, 2, 0);
+
+                char clientChoice;
+                if (!RecvAll(clientSocket, &clientChoice, 1)) goto cleanup;
+                std::cout << "[VNC] " << clientIP << " attempting VNCAuth" << std::endl;
+
+                if (!DoVNCAuth(clientSocket)) {
+                    std::cerr << "[VNC] " << clientIP << " authentication failed - disconnecting" << std::endl;
+                    goto cleanup;
+                }
+                std::cout << "[VNC] " << clientIP << " authenticated successfully" << std::endl;
+            }
 
             // Client init
             char shared;
@@ -426,6 +490,47 @@ private:
         std::cout << "[VNC] Client disconnected: " << clientIP << ":" << clientPort << std::endl;
         connectionCount_--;
         closesocket(clientSocket);
+    }
+
+    // VNC authentication: generate challenge, verify DES response
+    bool DoVNCAuth(SOCKET sock) {
+        // Generate 16-byte random challenge
+        UINT8 challenge[16];
+        if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, challenge, 16,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+            std::cerr << "[VNC] BCryptGenRandom failed" << std::endl;
+            return false;
+        }
+
+        // Send challenge to client
+        send(sock, (char*)challenge, 16, 0);
+
+        // Receive client's 16-byte DES-encrypted response
+        UINT8 response[16];
+        if (!RecvAll(sock, (char*)response, 16)) {
+            std::cerr << "[VNC] Failed to receive auth response" << std::endl;
+            return false;
+        }
+
+        // Compute expected response using our password
+        UINT8 expected[16] = {};
+        bool encrypted = VncDesEncrypt(challenge, password_.c_str(), expected);
+
+        bool authOk = encrypted && (memcmp(response, expected, 16) == 0);
+
+        // Send security result: 0 = OK, 1 = failed
+        UINT32 result = htonl(authOk ? 0u : 1u);
+        send(sock, (char*)&result, 4, 0);
+
+        if (!authOk) {
+            // RFB 3.8: send failure reason string
+            const char reason[] = "Authentication failed";
+            UINT32 len = htonl((u_long)strlen(reason));
+            send(sock, (char*)&len, 4, 0);
+            send(sock, reason, (int)strlen(reason), 0);
+        }
+
+        return authOk;
     }
 
     void HandleSetPixelFormat(SOCKET sock) {
@@ -630,6 +735,10 @@ VNCServer::VNCServer() : impl_(new VncServerImpl()) {}
 VNCServer::~VNCServer() { delete impl_; }
 bool VNCServer::Start() { return impl_->Start(); }
 void VNCServer::Stop() { impl_->Stop(); }
+
+void VNCServer::SetPassword(const std::string& password) {
+    impl_->SetPassword(password);
+}
 
 } // namespace Remote
 } // namespace KVMDrivers

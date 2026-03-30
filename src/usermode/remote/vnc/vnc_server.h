@@ -146,6 +146,9 @@ public:
     bool Start();
     void Stop();
     bool IsRunning() const;
+
+    // Authentication (call before Start())
+    void SetPassword(const std::string& password);
     
     // Framebuffer management
     void UpdateFramebuffer(const void* pixelData, int width, int height, int pitch);
