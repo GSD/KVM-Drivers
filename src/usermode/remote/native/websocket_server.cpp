@@ -2,15 +2,15 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <wincrypt.h>
 #include <iostream>
-#include <string>
 #include <thread>
 #include <vector>
+#include <string>
 #include <sstream>
-#include <iomanip>
 #include <functional>
-#include <map>
+#include <atomic>
+#include <mutex>
+#include <chrono>
 
 // Include driver interface
 #include "../../core/driver_interface.h"
@@ -153,36 +153,75 @@ public:
 
     void Stop() {
         running = false;
+        
         if (listenSocket != INVALID_SOCKET) {
             closesocket(listenSocket);
             listenSocket = INVALID_SOCKET;
         }
+        
         if (acceptThread.joinable()) {
             acceptThread.join();
         }
+        
+        // Wait for all client threads
+        {
+            std::lock_guard<std::mutex> lock(threadsMutex_);
+            for (auto& t : clientThreads_) {
+                if (t.joinable()) t.join();
+            }
+            clientThreads_.clear();
+        }
+        
         WSACleanup();
     }
 
 private:
+    std::vector<std::thread> clientThreads_;
+    std::mutex threadsMutex_;
+    std::atomic<int> connectionCount_{0};
+    static constexpr int MAX_CONNECTIONS = 20;
+    static constexpr int SOCKET_TIMEOUT_MS = 30000;
+
     void AcceptConnections() {
         while (running) {
+            // Use select() for non-blocking accept with timeout
+            fd_set readSet;
+            FD_ZERO(&readSet);
+            FD_SET(listenSocket, &readSet);
+            timeval tv = {0, 100000}; // 100ms
+            
+            if (select(0, &readSet, NULL, NULL, &tv) <= 0) {
+                continue;
+            }
+            
             sockaddr_in clientAddr;
             int clientAddrSize = sizeof(clientAddr);
             SOCKET clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &clientAddrSize);
 
             if (clientSocket == INVALID_SOCKET) {
-                if (running) {
-                    std::cerr << "accept failed: " << WSAGetLastError() << std::endl;
-                }
                 continue;
             }
+            
+            // Check connection limit
+            if (connectionCount_ >= MAX_CONNECTIONS) {
+                std::cerr << "Max connections reached, rejecting" << std::endl;
+                closesocket(clientSocket);
+                continue;
+            }
+            
+            // Set socket timeouts
+            DWORD timeout = SOCKET_TIMEOUT_MS;
+            setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
 
             char clientIP[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
             std::cout << "WebSocket client connected from " << clientIP << std::endl;
+            
+            connectionCount_++;
 
-            std::thread clientThread(&WebSocketServer::HandleClient, this, clientSocket);
-            clientThread.detach();
+            std::lock_guard<std::mutex> lock(threadsMutex_);
+            clientThreads_.emplace_back(&WebSocketServer::HandleClient, this, clientSocket);
         }
     }
 
@@ -221,6 +260,7 @@ private:
 
         // Handle WebSocket frames
         HandleWebSocket(clientSocket);
+        connectionCount_--;
         closesocket(clientSocket);
     }
 

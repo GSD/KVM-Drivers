@@ -89,13 +89,29 @@ public:
 
     void Stop() {
         running_ = false;
+        
+        // Close listen socket to unblock accept
         if (listenSocket_ != INVALID_SOCKET) {
             closesocket(listenSocket_);
             listenSocket_ = INVALID_SOCKET;
         }
+        
+        // Wait for accept thread
         if (acceptThread_.joinable()) {
             acceptThread_.join();
         }
+        
+        // Wait for all client threads to finish
+        {
+            std::lock_guard<std::mutex> lock(threadsMutex_);
+            for (auto& t : clientThreads_) {
+                if (t.joinable()) {
+                    t.join();
+                }
+            }
+            clientThreads_.clear();
+        }
+        
         WSACleanup();
     }
 
@@ -105,19 +121,48 @@ private:
     SOCKET listenSocket_;
     std::thread acceptThread_;
 
+    std::vector<std::thread> clientThreads_;
+    std::mutex threadsMutex_;
+    std::atomic<int> connectionCount_{0};
+    static constexpr int MAX_CONNECTIONS = 10;
+    static constexpr int SOCKET_TIMEOUT_MS = 30000;  // 30 seconds
+
     void AcceptLoop() {
         while (running_) {
+            // Use select() instead of blocking accept
+            fd_set readSet;
+            FD_ZERO(&readSet);
+            FD_SET(listenSocket_, &readSet);
+            timeval tv = {0, 100000}; // 100ms timeout
+            
+            if (select(0, &readSet, NULL, NULL, &tv) <= 0) {
+                continue;  // Timeout or error, check running_ flag
+            }
+            
             sockaddr_in clientAddr;
             int addrLen = sizeof(clientAddr);
             SOCKET clientSocket = accept(listenSocket_, (sockaddr*)&clientAddr, &addrLen);
 
             if (clientSocket == INVALID_SOCKET) {
-                if (running_) Sleep(100);
                 continue;
             }
-
-            std::thread clientThread(&VncServerImpl::HandleClient, this, clientSocket);
-            clientThread.detach();
+            
+            // Check connection limit
+            if (connectionCount_ >= MAX_CONNECTIONS) {
+                closesocket(clientSocket);
+                continue;
+            }
+            
+            // Set socket timeouts to prevent blocking
+            DWORD timeout = SOCKET_TIMEOUT_MS;
+            setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+            
+            connectionCount_++;
+            
+            // Track threads instead of detaching
+            std::lock_guard<std::mutex> lock(threadsMutex_);
+            clientThreads_.emplace_back(&VncServerImpl::HandleClient, this, clientSocket);
         }
     }
 
@@ -187,6 +232,7 @@ private:
             }
         }
 
+        connectionCount_--;
         closesocket(clientSocket);
     }
 

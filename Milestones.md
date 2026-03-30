@@ -431,7 +431,7 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] Performance profiling and optimization (performance_monitor.c)
 - [x] Memory leak detection and fixes (MemoryLeakAudit.ps1)
 - [x] Write comprehensive documentation (BUILD.md, WHQL_Certification_Guide.md)
-- [ ] Create Windows installer (MSI or custom)
+- [x] Create Windows installer (MSI or custom)
 - [x] Execute stress testing (stress_test.cpp, 12-hour test utility)
 
 ### Documentation Deliverables
@@ -439,7 +439,7 @@ This document outlines the phased development approach for building the KVM-Driv
 - [x] API reference (JSON-RPC documented)
 - [x] Driver development guide (WHQL_Certification_Guide.md)
 - [x] Troubleshooting guide (in BUILD.md)
-- [ ] Security whitepaper
+- [x] Security whitepaper
 - [x] Quick start guide (in BUILD.md)
 
 ---
