@@ -7,6 +7,7 @@
 #include <cstring>
 #include <zlib.h>
 #include "../../../common/adaptive_quality.h"
+#include "../../core/driver_interface.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -48,6 +49,123 @@ namespace RFB {
     };
 }
 
+// X11 keysym to Windows Virtual Key mapping
+UINT32 KeySymMapper::X11ToWindows(UINT32 keysym) {
+    // Latin-1 printable: 0x0020-0x007e map directly to VK codes for A-Z/0-9
+    if (keysym >= 0x0020 && keysym <= 0x007e) {
+        if (keysym >= 'a' && keysym <= 'z') return (UINT32)(keysym - 32);  // uppercase VK
+        if (keysym >= 'A' && keysym <= 'Z') return (UINT32)keysym;
+        if (keysym >= '0' && keysym <= '9') return (UINT32)keysym;
+        switch (keysym) {
+        case ' ':  return VK_SPACE;
+        case '!':  return '1';      // Shift+1
+        case '@':  return '2';
+        case '#':  return '3';
+        case '$':  return '4';
+        case '%':  return '5';
+        case '^':  return '6';
+        case '&':  return '7';
+        case '*':  return '8';
+        case '(':  return '9';
+        case ')':  return '0';
+        case '-': case '_': return VK_OEM_MINUS;
+        case '=': case '+': return VK_OEM_PLUS;
+        case '[': case '{': return VK_OEM_4;
+        case ']': case '}': return VK_OEM_6;
+        case '\\': case '|': return VK_OEM_5;
+        case ';': case ':': return VK_OEM_1;
+        case '\'': case '"': return VK_OEM_7;
+        case '`': case '~': return VK_OEM_3;
+        case ',': case '<': return VK_OEM_COMMA;
+        case '.': case '>': return VK_OEM_PERIOD;
+        case '/': case '?': return VK_OEM_2;
+        }
+        return 0;
+    }
+
+    // Function and special keys
+    switch (keysym) {
+    case 0xff08: return VK_BACK;       // BackSpace
+    case 0xff09: return VK_TAB;        // Tab
+    case 0xff0d: return VK_RETURN;     // Return
+    case 0xff13: return VK_PAUSE;      // Pause
+    case 0xff14: return VK_SCROLL;     // Scroll_Lock
+    case 0xff1b: return VK_ESCAPE;     // Escape
+    case 0xff21: return VK_CAPITAL;    // Caps Lock
+    case 0xff50: return VK_HOME;
+    case 0xff51: return VK_LEFT;
+    case 0xff52: return VK_UP;
+    case 0xff53: return VK_RIGHT;
+    case 0xff54: return VK_DOWN;
+    case 0xff55: return VK_PRIOR;      // Page Up
+    case 0xff56: return VK_NEXT;       // Page Down
+    case 0xff57: return VK_END;
+    case 0xff58: return VK_CLEAR;      // Begin
+    case 0xff63: return VK_INSERT;
+    case 0xff67: return VK_APPS;       // Menu
+    case 0xff6a: return VK_HELP;
+    case 0xff7f: return VK_NUMLOCK;
+    case 0xff8d: return VK_RETURN;     // KP_Enter
+    case 0xff95: return VK_HOME;       // KP_Home
+    case 0xff96: return VK_LEFT;       // KP_Left
+    case 0xff97: return VK_UP;         // KP_Up
+    case 0xff98: return VK_RIGHT;      // KP_Right
+    case 0xff99: return VK_DOWN;       // KP_Down
+    case 0xff9a: return VK_PRIOR;      // KP_Page_Up
+    case 0xff9b: return VK_NEXT;       // KP_Page_Down
+    case 0xff9c: return VK_END;        // KP_End
+    case 0xff9e: return VK_INSERT;     // KP_Insert
+    case 0xff9f: return VK_DELETE;     // KP_Delete
+    case 0xffaa: return VK_MULTIPLY;
+    case 0xffab: return VK_ADD;
+    case 0xffad: return VK_SUBTRACT;
+    case 0xffae: return VK_DECIMAL;
+    case 0xffaf: return VK_DIVIDE;
+    case 0xffb0: return VK_NUMPAD0;
+    case 0xffb1: return VK_NUMPAD1;
+    case 0xffb2: return VK_NUMPAD2;
+    case 0xffb3: return VK_NUMPAD3;
+    case 0xffb4: return VK_NUMPAD4;
+    case 0xffb5: return VK_NUMPAD5;
+    case 0xffb6: return VK_NUMPAD6;
+    case 0xffb7: return VK_NUMPAD7;
+    case 0xffb8: return VK_NUMPAD8;
+    case 0xffb9: return VK_NUMPAD9;
+    case 0xffbe: return VK_F1;
+    case 0xffbf: return VK_F2;
+    case 0xffc0: return VK_F3;
+    case 0xffc1: return VK_F4;
+    case 0xffc2: return VK_F5;
+    case 0xffc3: return VK_F6;
+    case 0xffc4: return VK_F7;
+    case 0xffc5: return VK_F8;
+    case 0xffc6: return VK_F9;
+    case 0xffc7: return VK_F10;
+    case 0xffc8: return VK_F11;
+    case 0xffc9: return VK_F12;
+    case 0xffe1: return VK_LSHIFT;
+    case 0xffe2: return VK_RSHIFT;
+    case 0xffe3: return VK_LCONTROL;
+    case 0xffe4: return VK_RCONTROL;
+    case 0xffe5: return VK_CAPITAL;
+    case 0xffe7: return VK_LWIN;       // Meta_L
+    case 0xffe8: return VK_RWIN;       // Meta_R
+    case 0xffe9: return VK_LMENU;      // Alt_L
+    case 0xffea: return VK_RMENU;      // Alt_R
+    case 0xffeb: return VK_LWIN;       // Super_L
+    case 0xffec: return VK_RWIN;       // Super_R
+    case 0xffed: return VK_LWIN;       // Hyper_L -> Win
+    case 0xffee: return VK_RWIN;       // Hyper_R -> Win
+    case 0xffff: return VK_DELETE;
+    }
+    return 0;
+}
+
+UINT32 KeySymMapper::WindowsToX11(UINT32 vk) {
+    UNREFERENCED_PARAMETER(vk);
+    return 0;  // Not needed for input injection direction
+}
+
 // Safe recv wrapper - returns false on timeout/disconnect
 static bool RecvAll(SOCKET s, char* buf, int len) {
     int received = 0;
@@ -59,6 +177,13 @@ static bool RecvAll(SOCKET s, char* buf, int len) {
     return true;
 }
 
+// Per-client input state (tracked per thread, no shared state needed)
+struct ClientInputState {
+    UCHAR lastButtonMask = 0;  // Tracks button transitions
+    LONG  lastX = 0;
+    LONG  lastY = 0;
+};
+
 class VncServerImpl {
 public:
     VncServerImpl(int port = 5900) 
@@ -66,6 +191,13 @@ public:
         , framebufferWidth_(1920), framebufferHeight_(1080) {
         // Pre-allocate framebuffer to avoid per-request heap allocation
         framebuffer_.resize((size_t)framebufferWidth_ * framebufferHeight_ * 4, 0);
+        // Initialize driver interface for input injection
+        driverInterface_ = new DriverInterface();
+        driverInterface_->Initialize();
+    }
+
+    ~VncServerImpl() {
+        delete driverInterface_;
     }
 
     bool Start() {
@@ -152,6 +284,9 @@ private:
 
     // Adaptive quality - shared across all clients, degrades globally under load
     AdaptiveQuality adaptiveQuality_;
+
+    // Driver interface for input injection
+    DriverInterface* driverInterface_;
 
     void AcceptLoop() {
         while (running_) {
@@ -254,6 +389,9 @@ private:
             send(clientSocket, name, (int)strlen(name), 0);
             std::cout << "[VNC] Handshake complete with " << clientIP << std::endl;
 
+            // Per-client input state (local to this thread - no locking needed)
+            ClientInputState inputState;
+
             // Main message loop
             while (running_) {
                 char msgType;
@@ -273,7 +411,7 @@ private:
                     HandleKeyEvent(clientSocket);
                     break;
                 case RFB::ClientPointerEvent:
-                    HandlePointerEvent(clientSocket);
+                    HandlePointerEvent(clientSocket, inputState);
                     break;
                 default:
                     std::cerr << "[VNC] Unknown message type: " << (int)msgType
@@ -413,21 +551,77 @@ private:
         if (!RecvAll(sock, padding, 2)) return;
         if (!RecvAll(sock, (char*)&keysym, 4)) return;
         keysym = ntohl(keysym);
+
+        UINT32 vk = KeySymMapper::X11ToWindows(keysym);
+        if (vk == 0) {
+            std::cout << "[VNC] KeyEvent: unmapped keysym=0x" << std::hex << keysym
+                      << std::dec << " (ignoring)" << std::endl;
+            return;
+        }
+
+        // Inject via DriverInterface
+        bool ok = false;
+        if (driverInterface_) {
+            if (down) {
+                ok = driverInterface_->InjectKeyDown((UCHAR)vk, 0);
+            } else {
+                ok = driverInterface_->InjectKeyUp((UCHAR)vk, 0);
+            }
+        }
         std::cout << "[VNC] KeyEvent: keysym=0x" << std::hex << keysym
-                  << std::dec << " down=" << (int)down << std::endl;
-        // TODO: dispatch to DriverInterface::InjectKeyDown/Up
+                  << " vk=0x" << vk << std::dec
+                  << (down ? " DOWN" : " UP")
+                  << (ok ? " OK" : " FAIL") << std::endl;
     }
 
-    void HandlePointerEvent(SOCKET sock) {
-        char buttonMask;
+    void HandlePointerEvent(SOCKET sock, ClientInputState& state) {
+        char buttonMaskByte;
         UINT16 x, y;
-        if (!RecvAll(sock, &buttonMask, 1)) return;
+        if (!RecvAll(sock, &buttonMaskByte, 1)) return;
         if (!RecvAll(sock, (char*)&x, 2)) return;
         if (!RecvAll(sock, (char*)&y, 2)) return;
         x = ntohs(x); y = ntohs(y);
-        std::cout << "[VNC] PointerEvent: buttons=0x" << std::hex << (int)buttonMask
-                  << std::dec << " x=" << x << " y=" << y << std::endl;
-        // TODO: dispatch to DriverInterface::InjectMouseMove / InjectMouseButton
+        UCHAR buttonMask = (UCHAR)buttonMaskByte;
+
+        if (!driverInterface_) return;
+
+        // Always send absolute mouse move
+        driverInterface_->InjectMouseMove((LONG)x, (LONG)y, true);
+
+        // Handle scroll wheel pseudo-buttons (bits 3 and 4)
+        if (buttonMask & 0x08) {
+            driverInterface_->InjectMouseScroll(WHEEL_DELTA, 0);   // scroll up
+        }
+        if (buttonMask & 0x10) {
+            driverInterface_->InjectMouseScroll(-WHEEL_DELTA, 0);  // scroll down
+        }
+        if (buttonMask & 0x20) {
+            driverInterface_->InjectMouseScroll(0, -WHEEL_DELTA);  // scroll left
+        }
+        if (buttonMask & 0x40) {
+            driverInterface_->InjectMouseScroll(0, WHEEL_DELTA);   // scroll right
+        }
+
+        // Detect transitions on real buttons (bits 0-2)
+        // RFB bit 0=Left, 1=Middle, 2=Right
+        static const struct { UCHAR bit; UCHAR vkBtn; } BTNS[] = {
+            { 0x01, VMOUSE_BUTTON_LEFT   },
+            { 0x02, VMOUSE_BUTTON_MIDDLE },
+            { 0x04, VMOUSE_BUTTON_RIGHT  },
+        };
+        for (const auto& b : BTNS) {
+            bool wasDown = (state.lastButtonMask & b.bit) != 0;
+            bool isDown  = (buttonMask & b.bit) != 0;
+            if (isDown && !wasDown) {
+                driverInterface_->InjectMouseButton(b.vkBtn, true);
+            } else if (!isDown && wasDown) {
+                driverInterface_->InjectMouseButton(b.vkBtn, false);
+            }
+        }
+
+        state.lastButtonMask = buttonMask & 0x07;  // only real buttons
+        state.lastX = x;
+        state.lastY = y;
     }
 };
 
