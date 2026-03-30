@@ -26,6 +26,12 @@ extern "C" {
     bool Nvenc_Init(void* enc, int w, int h, int fps);
     bool Nvenc_Encode(void* enc, void* frame, void** out, size_t* size);
     void Nvenc_Destroy(void* enc);
+
+    // OpenH264 software fallback
+    void* Software_Create();
+    bool Software_Init(void* enc, int w, int h, int fps);
+    bool Software_Encode(void* enc, void* frame, void** out, size_t* size);
+    void Software_Destroy(void* enc);
 }
 
 enum class EncoderType {
@@ -175,10 +181,12 @@ public:
             return IntelEncoder_Init(currentEncoder, width, height, fps);
 
         case EncoderType::Software:
+            std::cout << "No hardware encoder; trying OpenH264 software encoder" << std::endl;
+            currentType  = EncoderType::Software;
+            currentEncoder = Software_Create();
+            return Software_Init(currentEncoder, width, height, fps);
         default:
-            std::cout << "No hardware encoder available, will use software fallback" << std::endl;
-            currentType = EncoderType::Software;
-            return true; // Software encoder initialized separately
+            return false;
         }
     }
 
@@ -198,11 +206,7 @@ public:
             return IntelEncoder_Encode(currentEncoder, nv12Data, output, outputSize);
 
         case EncoderType::Software:
-            // No x264/OpenH264 dependency is bundled.  Returning false here causes
-            // video_pipeline.cpp's EncodeLoop to fall back to raw BGRA passthrough,
-            // which is acceptable for LAN/local use.  Add OpenH264 or libx264 here
-            // to enable compressed streaming over WAN links.
-            return false;
+            return Software_Encode(currentEncoder, nv12Data, output, outputSize);
 
         default:
             return false;
@@ -220,6 +224,9 @@ public:
                 break;
             case EncoderType::Intel_QSV:
                 IntelEncoder_Destroy(currentEncoder);
+                break;
+            case EncoderType::Software:
+                Software_Destroy(currentEncoder);
                 break;
             default:
                 break;

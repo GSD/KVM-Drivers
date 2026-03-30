@@ -1,6 +1,7 @@
 #pragma once
 #include <ntddk.h>
 #include <wdf.h>
+#include <vhf.h>
 
 #define POOL_TAG 'xniV'
 
@@ -59,11 +60,14 @@ typedef struct _XUSB_CONTROLLER_INFO {
 
 // Bus context (one per driver)
 typedef struct _VXINPUT_BUS_CONTEXT {
-    WDFDEVICE BusDevice;
+    WDFDEVICE  BusDevice;
     LIST_ENTRY ControllerList;
     KSPIN_LOCK ControllerListLock;
-    ULONG ControllerCount;
-    ULONG NextControllerIndex;
+    ULONG      ControllerCount;
+    ULONG      NextControllerIndex;
+    // VHF handle for the virtual HID gamepad (single controller slot)
+    VHFHANDLE  VhfHandle;
+    XUSB_REPORT LastReport;  // Most-recent submitted report (for re-polls)
 } VXINPUT_BUS_CONTEXT, *PVXINPUT_BUS_CONTEXT;
 
 // Controller context (one per virtual gamepad)

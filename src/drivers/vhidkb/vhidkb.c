@@ -12,6 +12,35 @@
 #include "vhidkb.h"
 #include "vhidkb_ioctl.h"
 
+#pragma comment(lib, "vhfkm.lib")
+
+// Standard HID boot-protocol keyboard report descriptor (8-byte reports)
+static const UCHAR s_KbdDescriptor[] = {
+    0x05, 0x01,       // Usage Page (Generic Desktop)
+    0x09, 0x06,       // Usage (Keyboard)
+    0xA1, 0x01,       // Collection (Application)
+    0x05, 0x07,       //   Usage Page (Key Codes)
+    0x19, 0xE0,       //   Usage Min (Left Ctrl)
+    0x29, 0xE7,       //   Usage Max (Right GUI)
+    0x15, 0x00,       //   Logical Min (0)
+    0x25, 0x01,       //   Logical Max (1)
+    0x75, 0x01,       //   Report Size (1)
+    0x95, 0x08,       //   Report Count (8)
+    0x81, 0x02,       //   Input (Data, Variable, Absolute) — modifier byte
+    0x95, 0x01,       //   Report Count (1)
+    0x75, 0x08,       //   Report Size (8)
+    0x81, 0x01,       //   Input (Constant) — reserved byte
+    0x95, 0x06,       //   Report Count (6)
+    0x75, 0x08,       //   Report Size (8)
+    0x15, 0x00,       //   Logical Min (0)
+    0x25, 0x65,       //   Logical Max (101)
+    0x05, 0x07,       //   Usage Page (Key Codes)
+    0x19, 0x00,       //   Usage Min (0)
+    0x29, 0x65,       //   Usage Max (101)
+    0x81, 0x00,       //   Input (Data, Array, Absolute) — key codes
+    0xC0              // End Collection
+};
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, vhidkbEvtDeviceAdd)
@@ -70,33 +99,26 @@ NTSTATUS vhidkbEvtDeviceAdd(
     WDF_IO_QUEUE_CONFIG queueConfig;
     WDFQUEUE queue;
     PDEVICE_CONTEXT deviceContext;
-    WDF_OBJECT_ATTRIBUTES attributes;
 
     PAGED_CODE();
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
-    // Configure device as a filter driver
-    WdfFdoInitSetFilter(DeviceInit);
+    // Stand-alone HID source (not a filter) — VHF creates its own child device
+    WDF_OBJECT_ATTRIBUTES devAttr;
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&devAttr, DEVICE_CONTEXT);
+    devAttr.EvtCleanupCallback = vhidkbEvtDeviceContextCleanup;
 
-    // Create device
-    status = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &device);
+    status = WdfDeviceCreate(&DeviceInit, &devAttr, &device);
     if (!NT_SUCCESS(status)) {
         KdPrint(("vhidkb: WdfDeviceCreate failed 0x%x\n", status));
         return status;
     }
 
-    // Set device context
-    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
-    status = WdfObjectAllocateContext(device, &attributes, (PVOID*)&deviceContext);
-    if (!NT_SUCCESS(status)) {
-        KdPrint(("vhidkb: WdfObjectAllocateContext failed 0x%x\n", status));
-        return status;
-    }
-
-    // Initialize device context
+    deviceContext = vhidkbGetDeviceContext(device);
     RtlZeroMemory(deviceContext, sizeof(DEVICE_CONTEXT));
     deviceContext->Device = device;
+    deviceContext->VhfHandle = NULL;
 
     // Create default I/O queue
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
@@ -115,13 +137,49 @@ NTSTATUS vhidkbEvtDeviceAdd(
         return status;
     }
 
-    // Set queue context
     WdfObjectSetDefaultIoQueue(device, queue);
 
-    KdPrint(("vhidkb: Device added successfully\n"));
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
+    // ── Create VHF virtual HID keyboard source ──────────────────────────────
+    VHF_CONFIG vhfConfig;
+    VHF_CONFIG_INIT(&vhfConfig,
+        WdfDeviceWdmGetDeviceObject(device),
+        sizeof(s_KbdDescriptor),
+        s_KbdDescriptor);
 
+    // Keyboard HID device attributes (VID/PID match generic keyboard)
+    vhfConfig.HidDeviceAttributes.Size          = sizeof(HID_DEVICE_ATTRIBUTES);
+    vhfConfig.HidDeviceAttributes.VendorID       = 0x045E;  // Microsoft
+    vhfConfig.HidDeviceAttributes.ProductID      = 0x0750;  // KVM virtual keyboard
+    vhfConfig.HidDeviceAttributes.VersionNumber  = 0x0100;
+
+    status = VhfCreate(&vhfConfig, &deviceContext->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vhidkb: VhfCreate failed 0x%x\n", status));
+        return status;
+    }
+
+    status = VhfStart(deviceContext->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vhidkb: VhfStart failed 0x%x\n", status));
+        VhfDelete(deviceContext->VhfHandle, TRUE);
+        deviceContext->VhfHandle = NULL;
+        return status;
+    }
+
+    KdPrint(("vhidkb: VHF virtual keyboard started\n"));
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
     return STATUS_SUCCESS;
+}
+
+// ── VHF cleanup: called when WDFDEVICE is being destroyed ────────────────────
+VOID vhidkbEvtDeviceContextCleanup(_In_ WDFOBJECT Object)
+{
+    PDEVICE_CONTEXT ctx = vhidkbGetDeviceContext((WDFDEVICE)Object);
+    if (ctx && ctx->VhfHandle) {
+        VhfDelete(ctx->VhfHandle, TRUE);
+        ctx->VhfHandle = NULL;
+        KdPrint(("vhidkb: VHF handle released\n"));
+    }
 }
 
 VOID vhidkbEvtIoDeviceControl(
@@ -229,13 +287,25 @@ NTSTATUS vhidkbSendHidReport(
         report[0], report[1], report[2], report[3],
         report[4], report[5], report[6], report[7]));
 
-    // Kernel-mode HID injection via pending read queue is not yet implemented.
-    // Returning STATUS_NOT_IMPLEMENTED causes driver_interface.cpp to fall back
-    // to the SendInput path, which correctly injects the key event.
-    // When the VHF (Virtual HID Framework) path is implemented, remove this
-    // and complete pending HID read IRPs with the report data above.
-    UNREFERENCED_PARAMETER(DeviceContext);
-    return STATUS_NOT_IMPLEMENTED;
+    // Submit the 8-byte HID report to the VHF virtual keyboard device.
+    // The HID class driver above VHF will deliver it to all consumers
+    // (e.g., the focused application, win32k, etc.).
+    if (!DeviceContext || !DeviceContext->VhfHandle) {
+        // VHF not yet started — fall back gracefully (driver_interface.cpp
+        // will retry via SendInput when IOCTL returns failure).
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    HID_XFER_PACKET packet;
+    packet.reportBuffer    = report;
+    packet.reportBufferLen = 8;    // Always 8 bytes for boot-protocol keyboard
+    packet.reportId        = 0;    // Report ID 0 (no report IDs in descriptor)
+
+    NTSTATUS st = VhfReadReportSubmit(DeviceContext->VhfHandle, &packet);
+    if (!NT_SUCCESS(st)) {
+        KdPrint(("vhidkb: VhfReadReportSubmit failed 0x%x\n", st));
+    }
+    return st;
 }
 
 NTSTATUS vhidkbInjectKeyDown(

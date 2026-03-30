@@ -7,6 +7,57 @@
 
 #include "vxinput.h"
 
+#pragma comment(lib, "vhfkm.lib")
+
+// HID gamepad descriptor — matches Xbox 360 layout for XInput recognition
+// Report ID 1, 13 bytes: [buttons(2)][ltrig][rtrig][LX(2)][LY(2)][RX(2)][RY(2)]
+static const UCHAR s_GamepadDescriptor[] = {
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x05,        // Usage (Game Pad)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x01,        //   Report ID (1)
+
+    // 16 digital buttons
+    0x05, 0x09,        //   Usage Page (Button)
+    0x19, 0x01,        //   Usage Min (Button 1)
+    0x29, 0x10,        //   Usage Max (Button 16)
+    0x15, 0x00,        //   Logical Min (0)
+    0x25, 0x01,        //   Logical Max (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x10,        //   Report Count (16)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+
+    // Left trigger (8-bit, 0-255)
+    0x05, 0x01,        //   Usage Page (Generic Desktop)
+    0x09, 0x32,        //   Usage (Z)
+    0x15, 0x00,        //   Logical Min (0)
+    0x26, 0xFF, 0x00,  //   Logical Max (255)
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+
+    // Right trigger (8-bit, 0-255)
+    0x09, 0x35,        //   Usage (Rz)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+
+    // Left stick X/Y (16-bit signed, -32768..32767)
+    0x09, 0x30,        //   Usage (X)
+    0x09, 0x31,        //   Usage (Y)
+    0x16, 0x00, 0x80,  //   Logical Min (-32768)
+    0x26, 0xFF, 0x7F,  //   Logical Max (32767)
+    0x75, 0x10,        //   Report Size (16)
+    0x95, 0x02,        //   Report Count (2)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+
+    // Right stick X/Y
+    0x09, 0x33,        //   Usage (Rx)
+    0x09, 0x34,        //   Usage (Ry)
+    0x95, 0x02,        //   Report Count (2)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+
+    0xC0               // End Collection
+};
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, vxinputEvtDeviceAdd)
@@ -69,11 +120,12 @@ NTSTATUS vxinputEvtDeviceAdd(
     // Initialise bus context
     busCtx = vxinputGetBusContext(device);
     RtlZeroMemory(busCtx, sizeof(VXINPUT_BUS_CONTEXT));
-    busCtx->BusDevice = device;
+    busCtx->BusDevice  = device;
+    busCtx->VhfHandle  = NULL;
     InitializeListHead(&busCtx->ControllerList);
     KeInitializeSpinLock(&busCtx->ControllerListLock);
 
-    // Create default I/O queue for IOCTL handling
+    // Default I/O queue for IOCTL handling
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
     queueConfig.EvtIoDeviceControl = vxinputEvtIoDeviceControl;
 
@@ -83,16 +135,53 @@ NTSTATUS vxinputEvtDeviceAdd(
         return status;
     }
 
-    // Create a named symbolic link so user-mode can open \\.\vxinput
+    // Symbolic link so user-mode can open \\.\vxinput
     {
-        DECLARE_CONST_UNICODE_STRING(devName,  L"\\Device\\vxinput");
-        DECLARE_CONST_UNICODE_STRING(symLink,  L"\\DosDevices\\vxinput");
+        DECLARE_CONST_UNICODE_STRING(devName, L"\\Device\\vxinput");
+        DECLARE_CONST_UNICODE_STRING(symLink, L"\\DosDevices\\vxinput");
         (void)WdfDeviceCreateSymbolicLink(device, &symLink);
         UNREFERENCED_PARAMETER(devName);
     }
 
-    KdPrint(("vxinput: Device added, IOCTL queue ready\n"));
+    // ── Create VHF virtual HID gamepad (XInput-compatible) ────────────────
+    VHF_CONFIG vhfCfg;
+    VHF_CONFIG_INIT(&vhfCfg,
+        WdfDeviceWdmGetDeviceObject(device),
+        sizeof(s_GamepadDescriptor),
+        s_GamepadDescriptor);
+
+    // VID/PID matching Xbox 360 controller for XInput detection
+    vhfCfg.HidDeviceAttributes.Size          = sizeof(HID_DEVICE_ATTRIBUTES);
+    vhfCfg.HidDeviceAttributes.VendorID      = 0x045E;  // Microsoft
+    vhfCfg.HidDeviceAttributes.ProductID     = 0x028E;  // Xbox 360 controller
+    vhfCfg.HidDeviceAttributes.VersionNumber = 0x0114;
+
+    status = VhfCreate(&vhfCfg, &busCtx->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vxinput: VhfCreate failed 0x%x\n", status));
+        return status;
+    }
+    status = VhfStart(busCtx->VhfHandle);
+    if (!NT_SUCCESS(status)) {
+        KdPrint(("vxinput: VhfStart failed 0x%x\n", status));
+        VhfDelete(busCtx->VhfHandle, TRUE);
+        busCtx->VhfHandle = NULL;
+        return status;
+    }
+
+    KdPrint(("vxinput: Device added, VHF gamepad started\n"));
     return STATUS_SUCCESS;
+}
+
+// Tear-down VHF when the device is removed
+static VOID vxinputEvtDeviceCleanup(_In_ WDFOBJECT Object)
+{
+    PVXINPUT_BUS_CONTEXT ctx =
+        vxinputGetBusContext((WDFDEVICE)Object);
+    if (ctx && ctx->VhfHandle) {
+        VhfDelete(ctx->VhfHandle, TRUE);
+        ctx->VhfHandle = NULL;
+    }
 }
 
 // ── IOCTL dispatcher ─────────────────────────────────────────────────────────
@@ -120,21 +209,49 @@ VOID vxinputEvtIoDeviceControl(
         status = WdfRequestRetrieveInputBuffer(
             Request, sizeof(XUSB_REPORT), (PVOID*)&report, &bufLen);
         if (NT_SUCCESS(status)) {
-            // Update the first (or only) controller's report in-context.
-            // A full implementation would look up by index; for now update
-            // the first active controller or stash for the next GetReport poll.
-            PVXINPUT_CONTROLLER_CONTEXT ctrlCtx =
-                vxinputGetControllerByIndex(busCtx, 0);
-            if (ctrlCtx) {
-                RtlCopyMemory(&ctrlCtx->CurrentReport, report, sizeof(XUSB_REPORT));
-                status = STATUS_SUCCESS;
+            // Cache the report
+            RtlCopyMemory(&busCtx->LastReport, report, sizeof(XUSB_REPORT));
+
+            // Convert XUSB_REPORT to HID gamepad report and submit via VHF
+            // Report layout (13 bytes, Report ID 1):
+            //  [0]     Report ID = 1
+            //  [1-2]   wButtons (16 bits)
+            //  [3]     bLeftTrigger
+            //  [4]     bRightTrigger
+            //  [5-6]   sThumbLX (LE signed 16)
+            //  [7-8]   sThumbLY (LE signed 16)
+            //  [9-10]  sThumbRX
+            //  [11-12] sThumbRY
+            if (busCtx->VhfHandle) {
+                UCHAR hidReport[13];
+                hidReport[0]  = 0x01;   // Report ID
+                hidReport[1]  = (UCHAR)(report->wButtons & 0xFF);
+                hidReport[2]  = (UCHAR)(report->wButtons >> 8);
+                hidReport[3]  = report->bLeftTrigger;
+                hidReport[4]  = report->bRightTrigger;
+                hidReport[5]  = (UCHAR)( report->sThumbLX & 0xFF);
+                hidReport[6]  = (UCHAR)((report->sThumbLX >> 8) & 0xFF);
+                hidReport[7]  = (UCHAR)( report->sThumbLY & 0xFF);
+                hidReport[8]  = (UCHAR)((report->sThumbLY >> 8) & 0xFF);
+                hidReport[9]  = (UCHAR)( report->sThumbRX & 0xFF);
+                hidReport[10] = (UCHAR)((report->sThumbRX >> 8) & 0xFF);
+                hidReport[11] = (UCHAR)( report->sThumbRY & 0xFF);
+                hidReport[12] = (UCHAR)((report->sThumbRY >> 8) & 0xFF);
+
+                HID_XFER_PACKET pkt;
+                pkt.reportBuffer    = hidReport;
+                pkt.reportBufferLen = sizeof(hidReport);
+                pkt.reportId        = 0x01;
+
+                status = VhfReadReportSubmit(busCtx->VhfHandle, &pkt);
+                if (!NT_SUCCESS(status)) {
+                    KdPrint(("vxinput: VhfReadReportSubmit failed 0x%x\n", status));
+                }
             } else {
-                // No controller created yet — queue is established, IOCTL
-                // succeeds so user-mode knows the driver is alive.
-                status = STATUS_SUCCESS;
+                status = STATUS_SUCCESS;  // VHF pending init; report cached
             }
-            KdPrint(("vxinput: SUBMIT_REPORT buttons=0x%04x\n",
-                     report->wButtons));
+
+            KdPrint(("vxinput: SUBMIT_REPORT buttons=0x%04x\n", report->wButtons));
         }
         break;
     }

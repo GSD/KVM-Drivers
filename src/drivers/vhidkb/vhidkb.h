@@ -7,6 +7,7 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <hidport.h>
+#include <vhf.h>
 
 #define INITGUID
 #include <guiddef.h>
@@ -19,22 +20,28 @@ typedef struct _HID_DEVICE_CONTEXT {
     WDFDEVICE Device;
 } HID_DEVICE_CONTEXT, *PHID_DEVICE_CONTEXT;
 
-// Legacy device context (for filter driver mode)
+// Device context — holds VHF handle and current keyboard state
 typedef struct _DEVICE_CONTEXT {
     WDFDEVICE Device;
     WDFQUEUE DefaultQueue;
     WDFIOTARGET HidIoTarget;
-    
-    // Current keyboard state
+
+    // VHF handle for this virtual HID keyboard source
+    VHFHANDLE VhfHandle;
+
+    // Current keyboard state (modifier + up-to-6 keycodes)
     UCHAR CurrentModifierKeys;
     UCHAR CurrentKeyCodes[VKB_MAX_KEYS];
-    
-    // HID report descriptor
+
+    // HID report descriptor memory
     WDFMEMORY HidReportDescriptorMemory;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, vhidkbGetDeviceContext)
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(HID_DEVICE_CONTEXT, vhidkbGetHidContext)
+
+// Device context cleanup (calls VhfDelete)
+EVT_WDF_OBJECT_CONTEXT_CLEANUP vhidkbEvtDeviceContextCleanup;
 
 // Driver callbacks
 NTSTATUS vhidkbEvtDeviceAdd(
