@@ -19,6 +19,7 @@
 #include "../../core/driver_interface.h"
 #include "../../common/logging/unified_logger.h"
 #include "../../common/performance/performance_monitor.h"
+#include "../../common/adaptive_quality.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -538,15 +539,21 @@ private:
     
     // Queue message for async injection
     void HandleMessage(int clientIndex, const std::string& message) {
-        // Rate limiting check
+        // Tier-aware rate limiting: limit drops as quality degrades under load
+        const QualitySettings& qs = adaptiveQuality_.GetSettings();
+        int rateLimit = qs.targetFps * 2;  // Allow 2 inputs per frame at current tier
+
         ULONGLONG now = GetTickCount64();
         if (now - clients_[clientIndex].lastInputTime > 1000) {
             clients_[clientIndex].inputCountLastSecond = 0;
         }
-        
-        if (clients_[clientIndex].inputCountLastSecond > 60) {
-            LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
-                "Rate limit exceeded for client %d", clientIndex);
+
+        if (clients_[clientIndex].inputCountLastSecond > rateLimit) {
+            LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
+                "Rate limit exceeded for client %d (limit=%d, tier=%s)",
+                clientIndex, rateLimit,
+                AdaptiveQuality::TierName(adaptiveQuality_.GetTier()));
+            adaptiveQuality_.ReportDroppedFrame();
             return;
         }
         
@@ -643,4 +650,7 @@ private:
     void SendClose(int clientIndex);
     void SendPong(int clientIndex, const std::vector<BYTE>& payload);
     void DisconnectClient(int clientIndex);
+
+    // Adaptive quality controller - shared across all clients
+    AdaptiveQuality adaptiveQuality_;
 };

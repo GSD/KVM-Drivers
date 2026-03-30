@@ -308,8 +308,12 @@ bool DriverInterface::InjectKeyCombo(const std::vector<std::pair<UCHAR, UCHAR>>&
         }
     }
     
-    // Small delay to ensure keys register
-    Sleep(50);
+    // When using driver injection the HID class driver handles report timing -
+    // no blocking Sleep needed. For SendInput fallback, use a minimal yield
+    // via SwitchToThread() which is non-blocking unlike Sleep(50).
+    if (!IsDriverInjectionAvailable()) {
+        SwitchToThread();  // Yield timeslice without blocking for a fixed duration
+    }
     
     // Release all keys in reverse order
     for (auto it = keys.rbegin(); it != keys.rend(); ++it) {

@@ -216,20 +216,29 @@ private:
 
             char clientIP[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
-            std::cout << "WebSocket client connected from " << clientIP << std::endl;
-            
+            int clientPort = ntohs(clientAddr.sin_port);
+            std::cout << "[WS] Client connected: " << clientIP << ":" << clientPort
+                      << " (" << connectionCount_.load() + 1 << "/" << MAX_CONNECTIONS << ")" << std::endl;
+
             connectionCount_++;
 
             std::lock_guard<std::mutex> lock(threadsMutex_);
-            clientThreads_.emplace_back(&WebSocketServer::HandleClient, this, clientSocket);
+            clientThreads_.emplace_back(&WebSocketServer::HandleClient, this, clientSocket, clientAddr);
         }
     }
 
-    void HandleClient(SOCKET clientSocket) {
+    void HandleClient(SOCKET clientSocket, sockaddr_in clientAddr) {
+        char clientIP[INET_ADDRSTRLEN] = "unknown";
+        inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
+        int clientPort = ntohs(clientAddr.sin_port);
+
         // Receive HTTP upgrade request
         char buffer[4096];
         int received = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
         if (received <= 0) {
+            std::cerr << "[WS] " << clientIP << ":" << clientPort
+                      << " disconnected before handshake (recv=" << received << ")" << std::endl;
+            connectionCount_--;
             closesocket(clientSocket);
             return;
         }
@@ -240,7 +249,9 @@ private:
         std::string wsKey = ParseHeader(request, "Sec-WebSocket-Key");
         
         if (wsKey.empty()) {
-            std::cerr << "Invalid WebSocket handshake - no key found" << std::endl;
+            std::cerr << "[WS] " << clientIP << ":" << clientPort
+                      << " invalid WebSocket upgrade - no Sec-WebSocket-Key" << std::endl;
+            connectionCount_--;
             closesocket(clientSocket);
             return;
         }
@@ -255,20 +266,36 @@ private:
             "Sec-WebSocket-Protocol: json-rpc\r\n"
             "\r\n";
 
-        send(clientSocket, response.c_str(), response.length(), 0);
-        std::cout << "WebSocket handshake complete" << std::endl;
+        send(clientSocket, response.c_str(), (int)response.length(), 0);
+        std::cout << "[WS] Handshake complete: " << clientIP << ":" << clientPort << std::endl;
 
         // Handle WebSocket frames
-        HandleWebSocket(clientSocket);
+        HandleWebSocket(clientSocket, clientIP, clientPort);
+
+        std::cout << "[WS] Client disconnected: " << clientIP << ":" << clientPort
+                  << " (" << connectionCount_.load() - 1 << "/" << MAX_CONNECTIONS << " remaining)" << std::endl;
         connectionCount_--;
         closesocket(clientSocket);
     }
 
-    void HandleWebSocket(SOCKET clientSocket) {
+    void HandleWebSocket(SOCKET clientSocket, const char* clientIP, int clientPort) {
         while (running) {
             // Read WebSocket frame header
             BYTE header[2];
-            if (recv(clientSocket, (char*)header, 2, 0) != 2) {
+            int ret = recv(clientSocket, (char*)header, 2, 0);
+            if (ret != 2) {
+                if (ret == 0) {
+                    std::cout << "[WS] " << clientIP << ":" << clientPort << " closed connection" << std::endl;
+                } else if (ret < 0) {
+                    int err = WSAGetLastError();
+                    if (err != WSAETIMEDOUT) {
+                        std::cerr << "[WS] " << clientIP << ":" << clientPort
+                                  << " recv error: " << err << std::endl;
+                    } else {
+                        std::cerr << "[WS] " << clientIP << ":" << clientPort
+                                  << " recv timeout (" << SOCKET_TIMEOUT_MS << "ms)" << std::endl;
+                    }
+                }
                 break;
             }
 
@@ -323,12 +350,17 @@ private:
                 ProcessMessage(clientSocket, std::string(payload.begin(), payload.end()));
                 break;
             case 0x8: // Close
+                std::cout << "[WS] " << clientIP << ":" << clientPort << " sent close frame" << std::endl;
                 SendClose(clientSocket);
                 return;
             case 0x9: // Ping
                 SendPong(clientSocket, payload);
                 break;
             case 0xA: // Pong
+                break;
+            default:
+                std::cerr << "[WS] " << clientIP << ":" << clientPort
+                          << " unknown opcode: 0x" << std::hex << (int)opcode << std::dec << std::endl;
                 break;
             }
         }
