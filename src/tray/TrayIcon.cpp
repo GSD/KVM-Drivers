@@ -16,8 +16,19 @@ public:
         // Create notify icon
         notifyIcon = gcnew NotifyIcon();
         notifyIcon->Text = "KVM Remote Control";
-        // Use embedded system icon; replace with a branded KVM.ico when available
-        notifyIcon->Icon = System::Drawing::SystemIcons::Application;
+        // Load branded icon from Resources folder (copied alongside .exe at build time)
+        try {
+            String^ exeDir = System::IO::Path::GetDirectoryName(
+                System::Reflection::Assembly::GetExecutingAssembly()->Location);
+            String^ icoPath = System::IO::Path::Combine(exeDir, "Resources", "KVM.ico");
+            if (System::IO::File::Exists(icoPath)) {
+                notifyIcon->Icon = gcnew System::Drawing::Icon(icoPath);
+            } else {
+                notifyIcon->Icon = System::Drawing::SystemIcons::Application;
+            }
+        } catch (...) {
+            notifyIcon->Icon = System::Drawing::SystemIcons::Application;
+        }
         notifyIcon->Visible = true;
         
         // Create context menu

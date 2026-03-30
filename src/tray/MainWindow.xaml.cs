@@ -38,6 +38,16 @@ namespace KVM.Tray
                 AppendLog($"[Auth] {ip} → {result}");
             approvalManager_.Start();
             RefreshTrustedClientsList();
+
+            // Minimize to tray instead of taskbar
+            StateChanged += (_, _) =>
+            {
+                if (WindowState == WindowState.Minimized)
+                {
+                    Hide();
+                    AppendLog("Minimized to tray");
+                }
+            };
         }
 
         private void LoadSettings()

@@ -7,8 +7,12 @@
     <RootNamespace>KVM.Tray</RootNamespace>
     <AssemblyName>KVMTray</AssemblyName>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Resources\KVM.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Resources\KVM.ico" />
   </ItemGroup>
 </Project>
