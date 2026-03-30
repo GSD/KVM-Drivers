@@ -10,10 +10,24 @@
 #include <condition_variable>
 #include <atomic>
 
-// User-mode logger with file output and thread-safe queue
+// Lock-free ring buffer for log messages.
+// Writers claim a slot via fetch_add; reader drains slots the writer has committed.
+// Slot state: 0 = empty, 1 = being written, 2 = committed/readable.
+struct LockFreeLogSlot {
+    std::atomic<int> state{0};  // 0=empty, 1=writing, 2=ready
+    char message[1024];
+};
+
+static constexpr size_t LF_RING_SIZE = 4096;  // Must be power of 2
+
+// User-mode logger with file output and lock-free ring buffer on the hot path
 class UserModeLogger {
 public:
-    UserModeLogger() : running_(false), logFile_(nullptr) {}
+    UserModeLogger() : running_(false), logFile_(nullptr), writeHead_(0) {
+        for (size_t i = 0; i < LF_RING_SIZE; i++) {
+            ring_[i].state.store(0, std::memory_order_relaxed);
+        }
+    }
     
     ~UserModeLogger() {
         Shutdown();
@@ -103,26 +117,28 @@ public:
             line,
             message);
         
-        // Add to queue
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (logQueue_.size() < 10000) {  // Prevent unbounded growth
-                logQueue_.push(logLine);
-            }
+        // Lock-free ring buffer write: atomically claim a slot, write, then commit.
+        // Falls back to drop (with counter) if ring is full rather than blocking.
+        size_t slot = writeHead_.fetch_add(1, std::memory_order_relaxed) & (LF_RING_SIZE - 1);
+        int expected = 0;
+        if (ring_[slot].state.compare_exchange_strong(expected, 1, std::memory_order_acquire)) {
+            strncpy(ring_[slot].message, logLine, sizeof(ring_[slot].message) - 1);
+            ring_[slot].message[sizeof(ring_[slot].message) - 1] = '\0';
+            ring_[slot].state.store(2, std::memory_order_release);  // Mark ready for reader
+            cv_.notify_one();
+        } else {
+            // Slot still held by a previous write - ring full, drop and count
+            InterlockedIncrement64((LONGLONG*)&droppedMessages_);
         }
         
-        cv_.notify_one();
-        
-        // Also output to debugger/console
+        // Always output to debugger immediately (lock-free, no queue needed)
         OutputDebugStringA(logLine);
-        printf("%s", logLine);
     }
     
     void GetStats(uint64_t* total, uint64_t* errors, uint64_t* warnings) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (total) *total = totalMessages_;
-        if (errors) *errors = errorsLogged_;
-        if (warnings) *warnings = warningsLogged_;
+        if (total)   *total   = totalMessages_.load(std::memory_order_relaxed);
+        if (errors)  *errors  = errorsLogged_.load(std::memory_order_relaxed);
+        if (warnings)*warnings = warningsLogged_.load(std::memory_order_relaxed);
     }
     
     void SetMinLevel(UCHAR level) {
@@ -131,41 +147,60 @@ public:
     }
 
 private:
-    std::mutex mutex_;
+    std::mutex mutex_;                    // Protects logFile_, settings
     std::condition_variable cv_;
-    std::queue<std::string> logQueue_;
     std::thread writerThread_;
     std::atomic<bool> running_;
-    
+
+    // Lock-free ring buffer
+    LockFreeLogSlot ring_[LF_RING_SIZE];
+    std::atomic<size_t> writeHead_;
+
     FILE* logFile_;
     UCHAR minLevel_;
     ULONG categories_;
-    
-    uint64_t totalMessages_ = 0;
-    uint64_t errorsLogged_ = 0;
-    uint64_t warningsLogged_ = 0;
-    
+
+    std::atomic<uint64_t> totalMessages_{0};
+    std::atomic<uint64_t> errorsLogged_{0};
+    std::atomic<uint64_t> warningsLogged_{0};
+    volatile LONGLONG droppedMessages_ = 0;
+
+    // Background thread drains the ring buffer to disk
     void WriterLoop() {
-        while (running_) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait_for(lock, std::chrono::seconds(1), [this] { 
-                return !logQueue_.empty() || !running_; 
-            });
-            
-            // Process queue
-            while (!logQueue_.empty()) {
-                std::string msg = logQueue_.front();
-                logQueue_.pop();
-                
-                if (logFile_) {
-                    fprintf(logFile_, "%s", msg.c_str());
+        size_t readHead = 0;
+        while (running_ || HasPendingSlots(readHead)) {
+            // Wait up to 1s for new entries
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait_for(lock, std::chrono::milliseconds(100), [this, readHead] {
+                    return !running_ || HasPendingSlots(readHead);
+                });
+            }
+
+            // Drain all committed slots
+            int flushed = 0;
+            for (int i = 0; i < (int)LF_RING_SIZE; i++) {
+                size_t slot = readHead & (LF_RING_SIZE - 1);
+                if (ring_[slot].state.load(std::memory_order_acquire) == 2) {
+                    if (logFile_) {
+                        fputs(ring_[slot].message, logFile_);
+                    }
+                    ring_[slot].state.store(0, std::memory_order_release);  // Mark free
+                    readHead++;
+                    flushed++;
+                } else {
+                    break;  // Stop at first non-ready slot to preserve ordering
                 }
             }
-            
-            if (logFile_) {
+
+            if (logFile_ && flushed > 0) {
                 fflush(logFile_);
             }
         }
+    }
+
+    bool HasPendingSlots(size_t readHead) const {
+        return ring_[readHead & (LF_RING_SIZE - 1)].state.load(std::memory_order_acquire) == 2;
     }
     
     const char* LevelToString(UCHAR level) {

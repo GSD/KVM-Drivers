@@ -28,8 +28,7 @@ NTSTATUS LoggerInitialize(
     Context->ActiveCategories = Categories;
     Context->LogToDebugger = TRUE;
     Context->LogToFile = FALSE;  // File logging not supported in kernel
-    
-    KeInitializeSpinLock(&Context->BufferLock);
+    // WriteIndex starts at 0 - no lock needed, InterlockedIncrement claims slots atomically
     
     // Store as global for driver use
     g_DriverLogger = Context;
@@ -116,14 +115,10 @@ VOID LoggerLog(
         InterlockedIncrement64((LONG64*)&Context->WarningsLogged);
     }
     
-    // Write to ring buffer
-    KIRQL oldIrql;
-    KeAcquireSpinLock(&Context->BufferLock, &oldIrql);
-    
-    ULONG index = InterlockedIncrement((LONG*)&Context->WriteIndex) % MAX_LOG_BUFFER_ENTRIES;
+    // Lock-free ring buffer write: claim a unique slot with atomic increment,
+    // then write directly - no spinlock needed since each thread gets its own slot.
+    ULONG index = (ULONG)(InterlockedIncrement(&Context->WriteIndex) - 1) % MAX_LOG_BUFFER_ENTRIES;
     RtlCopyMemory(&Context->Buffer[index], &entry, sizeof(LOG_ENTRY));
-    
-    KeReleaseSpinLock(&Context->BufferLock, oldIrql);
     
     // Output to debugger
     if (Context->LogToDebugger) {
@@ -171,12 +166,10 @@ ULONG LoggerGetRecentEntries(
         return 0;
     }
     
-    KIRQL oldIrql;
-    KeAcquireSpinLock(&Context->BufferLock, &oldIrql);
+    // Snapshot write index once to get a consistent read baseline (lock-free)
+    ULONG current = (ULONG)InterlockedAdd(&Context->WriteIndex, 0);
     
     ULONG count = 0;
-    ULONG current = Context->WriteIndex;
-    
     while (count < MaxEntries && count < MAX_LOG_BUFFER_ENTRIES) {
         ULONG index = (current + MAX_LOG_BUFFER_ENTRIES - count - 1) % MAX_LOG_BUFFER_ENTRIES;
         
@@ -184,11 +177,9 @@ ULONG LoggerGetRecentEntries(
             RtlCopyMemory(&Entries[count], &Context->Buffer[index], sizeof(LOG_ENTRY));
             count++;
         } else {
-            break;  // Empty entry
+            break;  // Empty entry - buffer not yet full
         }
     }
-    
-    KeReleaseSpinLock(&Context->BufferLock, oldIrql);
     
     return count;
 }

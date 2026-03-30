@@ -52,11 +52,11 @@ typedef struct _LOG_ENTRY {
 
 // Logger context
 typedef struct _LOGGER_CONTEXT {
-    // Ring buffer for recent logs
+    // Lock-free ring buffer: each writer atomically claims a slot via InterlockedIncrement.
+    // No spinlock needed - writers get unique slots, readers snapshot WriteIndex first.
     LOG_ENTRY Buffer[MAX_LOG_BUFFER_ENTRIES];
-    ULONG WriteIndex;
-    ULONG ReadIndex;
-    KSPIN_LOCK BufferLock;
+    volatile LONG WriteIndex;   // Claimed atomically; slot index = (WriteIndex-1) % SIZE
+    ULONG ReadIndex;            // Only used by single-threaded readers
     
     // Settings
     UCHAR MinLevel;
