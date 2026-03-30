@@ -63,6 +63,10 @@ namespace KVM.Tray
             // Apply max clients if controls exist
             if (settings.VncMaxClients > 0) VncMaxClients.Text = settings.VncMaxClients.ToString();
             if (settings.WsMaxClients  > 0) WsMaxClients.Text  = settings.WsMaxClients.ToString();
+
+            // Apply VNC security settings
+            VncAnonTls.IsChecked = settings.VncAnonTls;
+            VncCertPin.Text = settings.VncCertPin ?? "";
             
             // Apply driver auto-start if enabled
             if (settings.AutoStartDrivers)
@@ -330,7 +334,9 @@ namespace KVM.Tray
                 settings.WsMaxClients = wsMax;
 
             settings.VncRequireAuth = VncRequireAuth.IsChecked ?? true;
-            settings.UseTls = UseTls.IsChecked ?? true;
+            settings.UseTls         = UseTls.IsChecked ?? true;
+            settings.VncAnonTls     = VncAnonTls.IsChecked ?? false;
+            settings.VncCertPin     = VncCertPin.Text?.Trim() ?? "";
 
             // Parse IP allowlist (trim empty lines)
             settings.AllowedIPs = IpAllowlist.Text

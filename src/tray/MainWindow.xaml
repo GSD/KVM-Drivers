@@ -193,6 +193,24 @@
                             </Grid>
                         </GroupBox>
 
+                        <GroupBox Header="VNC Security" Margin="0,10,0,0">
+                            <StackPanel Margin="10">
+                                <CheckBox x:Name="VncAnonTls" Content="Enable AnonTLS (TLS 1.2/1.3 encryption, sec type 18)"
+                                          IsChecked="False" Margin="0,0,0,8"
+                                          ToolTip="Wraps VNC in TLS using a self-signed cert. Compatible with TigerVNC, RealVNC."/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Pinned Cert Hash:" VerticalAlignment="Center"
+                                               ToolTip="SHA-1 thumbprint of client cert to pin (leave blank to accept all)"/>
+                                    <TextBox Grid.Column="1" x:Name="VncCertPin" FontFamily="Consolas" FontSize="11"
+                                             ToolTip="SHA-1 hex thumbprint, e.g.: A1B2C3... (optional)"/>
+                                </Grid>
+                            </StackPanel>
+                        </GroupBox>
+
                         <GroupBox Header="Native Protocol (WebSocket)" Margin="0,10,0,0">
                             <Grid Margin="10">
                                 <Grid.ColumnDefinitions>

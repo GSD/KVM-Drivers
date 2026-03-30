@@ -43,6 +43,10 @@ namespace KVM.Tray
         public int VncMaxClients { get; set; } = 10;
         public int WsMaxClients  { get; set; } = 20;
 
+        // VNC security
+        public bool   VncAnonTls    { get; set; } = false;
+        public string VncCertPin    { get; set; } = "";  // SHA-1 thumbprint for cert pinning
+
         // Security settings
         public bool RequireAuth { get; set; } = true;
         public string AuthToken { get; set; } = "";
