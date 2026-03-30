@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 #include <vector>
+#include <mutex>
+#include <atomic>
 #include "../../../drivers/vhidkb/vhidkb_ioctl.h"
 #include "../../../drivers/vhidmouse/vhidmouse_ioctl.h"
 #include "../../../drivers/vxinput/vxinput.h"
@@ -40,7 +42,8 @@ private:
     HANDLE mouseHandle;
     HANDLE controllerHandle;
     HANDLE displayHandle;
-    bool useDriverInjection;
+    std::atomic<bool> useDriverInjection;
+    mutable std::mutex handleMutex_;  // Protects all HANDLE members
 };
 
 // HID to Virtual Key conversion helper

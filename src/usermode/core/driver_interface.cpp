@@ -88,6 +88,7 @@ bool DriverInterface::Initialize() {
 }
 
 void DriverInterface::Disconnect() {
+    std::lock_guard<std::mutex> lock(handleMutex_);
     if (keyboardHandle != INVALID_HANDLE_VALUE) {
         CloseHandle(keyboardHandle);
         keyboardHandle = INVALID_HANDLE_VALUE;
@@ -232,25 +233,26 @@ bool SendKeyWithModifiers(WORD vkCode, UCHAR modifiers, bool keyUp) {
 
 bool DriverInterface::InjectKeyDown(UCHAR keyCode, UCHAR modifiers) {
     // Try driver first if available
-    if (useDriverInjection && keyboardHandle != INVALID_HANDLE_VALUE) {
-        VKB_INPUT_REPORT report = {};
-        report.ModifierKeys = modifiers;
-        report.KeyCodes[0] = keyCode;
+    {
+        std::lock_guard<std::mutex> lock(handleMutex_);
+        if (useDriverInjection && keyboardHandle != INVALID_HANDLE_VALUE) {
+            VKB_INPUT_REPORT report = {};
+            report.ModifierKeys = modifiers;
+            report.KeyCodes[0] = keyCode;
 
-        DWORD bytesReturned;
-        BOOL result = DeviceIoControl(
-            keyboardHandle,
-            IOCTL_VKB_INJECT_KEYDOWN,
-            &report,
-            sizeof(report),
-            NULL,
-            0,
-            &bytesReturned,
-            NULL
-        );
-        
-        if (result) return true;
-        // Fall through to SendInput if driver fails
+            DWORD bytesReturned;
+            BOOL result = DeviceIoControl(
+                keyboardHandle,
+                IOCTL_VKB_INJECT_KEYDOWN,
+                &report,
+                sizeof(report),
+                NULL,
+                0,
+                &bytesReturned,
+                NULL
+            );
+            if (result) return true;
+        }
     }
     
     // Fallback to SendInput
@@ -265,25 +267,26 @@ bool DriverInterface::InjectKeyDown(UCHAR keyCode, UCHAR modifiers) {
 }
 
 bool DriverInterface::InjectKeyUp(UCHAR keyCode, UCHAR modifiers) {
-    // Try driver first if available
-    if (useDriverInjection && keyboardHandle != INVALID_HANDLE_VALUE) {
-        VKB_INPUT_REPORT report = {};
-        report.ModifierKeys = modifiers;
-        report.KeyCodes[0] = keyCode;
+    {
+        std::lock_guard<std::mutex> lock(handleMutex_);
+        if (useDriverInjection && keyboardHandle != INVALID_HANDLE_VALUE) {
+            VKB_INPUT_REPORT report = {};
+            report.ModifierKeys = modifiers;
+            report.KeyCodes[0] = keyCode;
 
-        DWORD bytesReturned;
-        BOOL result = DeviceIoControl(
-            keyboardHandle,
-            IOCTL_VKB_INJECT_KEYUP,
-            &report,
-            sizeof(report),
-            NULL,
-            0,
-            &bytesReturned,
-            NULL
-        );
-        
-        if (result) return true;
+            DWORD bytesReturned;
+            BOOL result = DeviceIoControl(
+                keyboardHandle,
+                IOCTL_VKB_INJECT_KEYUP,
+                &report,
+                sizeof(report),
+                NULL,
+                0,
+                &bytesReturned,
+                NULL
+            );
+            if (result) return true;
+        }
     }
     
     // Fallback to SendInput
@@ -319,30 +322,32 @@ bool DriverInterface::InjectKeyCombo(const std::vector<std::pair<UCHAR, UCHAR>>&
 }
 
 bool DriverInterface::InjectMouseMove(LONG x, LONG y, bool absolute) {
-    // Try driver first if available
-    if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
-        DWORD ioctl = absolute ? IOCTL_VMOUSE_MOVE_ABSOLUTE : IOCTL_VMOUSE_MOVE_RELATIVE;
-        
-        if (absolute) {
-            VMOUSE_ABSOLUTE_DATA data = {};
-            data.X = x;
-            data.Y = y;
-            data.ScreenWidth = GetSystemMetrics(SM_CXSCREEN);
-            data.ScreenHeight = GetSystemMetrics(SM_CYSCREEN);
+    {
+        std::lock_guard<std::mutex> lock(handleMutex_);
+        if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
+            DWORD ioctl = absolute ? IOCTL_VMOUSE_MOVE_ABSOLUTE : IOCTL_VMOUSE_MOVE_RELATIVE;
             
-            DWORD bytesReturned;
-            BOOL result = DeviceIoControl(mouseHandle, ioctl, &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
-            if (result) return true;
-        } else {
-            VMOUSE_MOVE_DATA data = {};
-            data.X = x;
-            data.Y = y;
-            
-            DWORD bytesReturned;
-            BOOL result = DeviceIoControl(mouseHandle, ioctl, &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
-            if (result) return true;
+            if (absolute) {
+                VMOUSE_ABSOLUTE_DATA data = {};
+                data.X = x;
+                data.Y = y;
+                data.ScreenWidth = GetSystemMetrics(SM_CXSCREEN);
+                data.ScreenHeight = GetSystemMetrics(SM_CYSCREEN);
+                
+                DWORD bytesReturned;
+                BOOL result = DeviceIoControl(mouseHandle, ioctl, &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
+                if (result) return true;
+            } else {
+                VMOUSE_MOVE_DATA data = {};
+                data.X = x;
+                data.Y = y;
+                
+                DWORD bytesReturned;
+                BOOL result = DeviceIoControl(mouseHandle, ioctl, &data, sizeof(data), NULL, 0, &bytesReturned, NULL);
+                if (result) return true;
+            }
         }
-    }
+    }  // unlock mutex before fallback
     
     // Fallback to SendInput
     if (UseSendInputFallback) {
@@ -369,25 +374,26 @@ bool DriverInterface::InjectMouseMove(LONG x, LONG y, bool absolute) {
 }
 
 bool DriverInterface::InjectMouseButton(UCHAR button, bool pressed) {
-    // Try driver first if available
-    if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
-        VMOUSE_BUTTON_DATA data = {};
-        data.Button = button;
-        data.Pressed = pressed;
+    {
+        std::lock_guard<std::mutex> lock(handleMutex_);
+        if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
+            VMOUSE_BUTTON_DATA data = {};
+            data.Button = button;
+            data.Pressed = pressed;
 
-        DWORD bytesReturned;
-        BOOL result = DeviceIoControl(
-            mouseHandle,
-            IOCTL_VMOUSE_BUTTON,
-            &data,
-            sizeof(data),
-            NULL,
-            0,
-            &bytesReturned,
-            NULL
-        );
-        
-        if (result) return true;
+            DWORD bytesReturned;
+            BOOL result = DeviceIoControl(
+                mouseHandle,
+                IOCTL_VMOUSE_BUTTON,
+                &data,
+                sizeof(data),
+                NULL,
+                0,
+                &bytesReturned,
+                NULL
+            );
+            if (result) return true;
+        }
     }
     
     // Fallback to SendInput
@@ -422,25 +428,26 @@ bool DriverInterface::InjectMouseButton(UCHAR button, bool pressed) {
 }
 
 bool DriverInterface::InjectMouseScroll(int vertical, int horizontal) {
-    // Try driver first if available
-    if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
-        VMOUSE_SCROLL_DATA data = {};
-        data.Vertical = vertical;
-        data.Horizontal = horizontal;
+    {
+        std::lock_guard<std::mutex> lock(handleMutex_);
+        if (useDriverInjection && mouseHandle != INVALID_HANDLE_VALUE) {
+            VMOUSE_SCROLL_DATA data = {};
+            data.Vertical = vertical;
+            data.Horizontal = horizontal;
 
-        DWORD bytesReturned;
-        BOOL result = DeviceIoControl(
-            mouseHandle,
-            IOCTL_VMOUSE_SCROLL,
-            &data,
-            sizeof(data),
-            NULL,
-            0,
-            &bytesReturned,
-            NULL
-        );
-        
-        if (result) return true;
+            DWORD bytesReturned;
+            BOOL result = DeviceIoControl(
+                mouseHandle,
+                IOCTL_VMOUSE_SCROLL,
+                &data,
+                sizeof(data),
+                NULL,
+                0,
+                &bytesReturned,
+                NULL
+            );
+            if (result) return true;
+        }
     }
     
     // Fallback to SendInput
@@ -457,6 +464,7 @@ bool DriverInterface::InjectMouseScroll(int vertical, int horizontal) {
 }
 
 bool DriverInterface::InjectControllerReport(const XUSB_REPORT& report) {
+    std::lock_guard<std::mutex> lock(handleMutex_);
     if (controllerHandle == INVALID_HANDLE_VALUE) return false;
 
     // TODO: Send XUSB report via IOCTL
@@ -465,5 +473,5 @@ bool DriverInterface::InjectControllerReport(const XUSB_REPORT& report) {
 }
 
 bool DriverInterface::IsDriverInjectionAvailable() const {
-    return useDriverInjection;
+    return useDriverInjection.load();
 }
