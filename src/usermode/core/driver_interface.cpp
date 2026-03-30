@@ -155,12 +155,14 @@ WORD HidToVirtualKey(UCHAR hidKeyCode) {
     return 0;
 }
 
-// Map HID modifiers to SendInput flags
+// Map HID modifiers to SendInput extended-key flags
 void MapHidModifiers(UCHAR hidModifiers, INPUT& input) {
-    if (hidModifiers & VKB_MOD_LEFT_CTRL)  input.ki.dwFlags |= 0;
-    if (hidModifiers & VKB_MOD_LEFT_SHIFT) input.ki.dwFlags |= 0;
-    if (hidModifiers & VKB_MOD_LEFT_ALT)    input.ki.dwFlags |= 0;
-    if (hidModifiers & VKB_MOD_LEFT_GUI)    input.ki.dwFlags |= 0;
+    // Right-side modifier keys require KEYEVENTF_EXTENDEDKEY
+    if (hidModifiers & VKB_MOD_RIGHT_CTRL)  input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (hidModifiers & VKB_MOD_RIGHT_ALT)   input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (hidModifiers & VKB_MOD_RIGHT_GUI)   input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    // Left-side modifiers and shift do not need the extended flag
+    UNREFERENCED_PARAMETER(hidModifiers);  // suppress warning for left-side bits
 }
 
 bool SendKeyWithModifiers(WORD vkCode, UCHAR modifiers, bool keyUp) {
@@ -471,9 +473,21 @@ bool DriverInterface::InjectControllerReport(const XUSB_REPORT& report) {
     std::lock_guard<std::mutex> lock(handleMutex_);
     if (controllerHandle == INVALID_HANDLE_VALUE) return false;
 
-    // TODO: Send XUSB report via IOCTL
-    UNREFERENCED_PARAMETER(report);
-    return false;
+    // Copy so we can fill in the protocol header fields
+    XUSB_REPORT r = report;
+    r.bReportId = 0x00;
+    r.bSize     = sizeof(XUSB_REPORT);
+
+    DWORD bytesReturned = 0;
+    BOOL result = DeviceIoControl(
+        controllerHandle,
+        IOCTL_VXINPUT_SUBMIT_REPORT,
+        &r, sizeof(r),
+        NULL, 0,
+        &bytesReturned,
+        NULL
+    );
+    return result != FALSE;
 }
 
 bool DriverInterface::IsDriverInjectionAvailable() const {
