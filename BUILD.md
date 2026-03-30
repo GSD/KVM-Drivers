@@ -406,6 +406,17 @@ $end = Get-Date
 KVMService.exe --benchmark-encoding
 ```
 
+## Known Limitations (Post-Audit State — March 2026)
+
+| Area | Current Behaviour | Path Forward |
+|------|------------------|--------------|
+| **vhidkb keyboard injection** | Uses `SendInput` fallback — kernel filter driver accepts the IOCTL but returns `STATUS_NOT_IMPLEMENTED` to preserve correct fallback logic | Implement VHF (Virtual HID Framework) pending-read queue |
+| **vxinput controller** | IOCTL accepted and report stored; device does not yet enumerate as an XInput controller in Windows | Implement ViGEmBus-style PDO enumeration for XInput |
+| **vdisplay SharedTexture** | `FinishFrameProcessing` publishes the DXGI shared handle; consumer (video pipeline / VNC) must call `OpenSharedResource` separately | Already usable; IDD bridge IOCTL path documented |
+| **Software H.264 encoder** | `EncoderType::Software` returns `false` → raw BGRA passthrough (fine for LAN; high bandwidth on WAN) | Add x264 or OpenH264 as optional dep |
+| **QSV encoder** | Tries to load `libmfx64-gen.dll`/`libvpl.dll`; fails gracefully if not present → uses NVENC/AMF | Ship Intel VPL runtime with installer |
+| **WHQL submission** | All drivers dev-signed; WHQL requires EV certificate | Purchase EV code-signing cert |
+
 ## CI/CD Integration
 
 See `.github/workflows/build.yml` for GitHub Actions configuration.

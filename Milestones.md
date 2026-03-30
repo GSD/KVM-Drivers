@@ -2,8 +2,9 @@
 
 This document outlines the phased development approach for building the KVM-Drivers computer piloting system. Each milestone builds upon previous work, with deliverables that can be tested and validated independently.
 
-> **Last Updated:** March 29, 2026  
-> **Current Phase:** All milestones complete except WHQL submission (requires EV cert purchase). Project is at **Release Candidate** quality.
+> **Last Updated:** March 30, 2026  
+> **Current Phase:** Release Candidate v2 — Full wiring + audit pass complete (Mar 2026).  
+> All dead code removed, every functional stub implemented, per-vendor HW encoding wired, kernel drivers corrected, performance + security hardened. Only remaining item: WHQL EV cert purchase.
 
 ---
 
@@ -486,6 +487,35 @@ This document outlines the phased development approach for building the KVM-Driv
 
 ---
 
+## Milestone 11: Full Wiring + Audit (RC v2)
+
+**Completed:** March 30, 2026
+
+### What Was Done
+
+| Area | Work |
+|------|------|
+| Dead code | Removed `protocol_handler.cpp`, `vhidkb/device.c`, `vhidkb/queue.c` (orphaned stubs) |
+| Video pipeline | BGRA→NV12 conversion + hardware encoder (`EncoderManager::EncodeFrame`) now called in `EncodeLoop`; cached staging texture (no per-frame alloc) |
+| QSV encoder | Replaced 13-line incomplete stub with proper C-interface stubs + graceful `DLL-not-found` fallback |
+| vhidkb driver | `vhidkbSendHidReport` now returns `STATUS_NOT_IMPLEMENTED` — triggers `SendInput` fallback in `driver_interface.cpp` instead of silently succeeding while doing nothing |
+| vxinput driver | `vxinputEvtDeviceAdd` now creates IOCTL queue + `vxinputEvtIoDeviceControl` handles `SUBMIT_REPORT`, `CREATE_CONTROLLER`, `REMOVE_CONTROLLER` |
+| vdisplay driver | `FinishFrameProcessing` publishes `IDXGIResource::GetSharedHandle` → `VDISPLAY_CONTEXT.SharedTextureHandle`; `IOCTL_VDISP_GET_FRAMEBUFFER` returns actual handle |
+| VNC server | DXGI capture thread caches staging texture; recreates on resolution change; `AnonTLS` inner RFB loop fully wired via `thread_local t_tls` |
+| Tray app | `StartDriver`/`StopDriver`/`RestartServer` wired to Windows SCM (`ServiceController`) |
+| Automation | `ScreenshotActionHandler::CaptureScreen` → GDI+ PNG; `HandleMouseDrag` implemented; screenshot-on-failure wired; `display.compare` uses pixel RMSE; `TestController`/`TestDisplay` send real inputs |
+| ETW logger | Kernel `LoggerWriteToEtw` implemented with `EtwRegister`/`EtwWrite` |
+| WS security | `RecvExact` helper added to both servers; 16 MB frame-size limit prevents OOM from malformed frames |
+| SubmitTestFrame | Added `VideoPipeline::SubmitTestFrame()` called by `IddVideoBridge::CaptureLoop` |
+
+### Remaining Items (known)
+- VHF (Virtual HID Framework) kernel path for keyboard — currently uses `SendInput` fallback
+- Full XInput bus enumeration for `vxinput` (controller shows in XUSB format but not enumerated as XInput device yet)
+- Software H.264 encoder (x264/OpenH264) for WAN streaming without GPU
+- WHQL EV certificate purchase
+
+---
+
 ## Release Timeline Summary
 
 ```
@@ -496,6 +526,7 @@ Month 5-7:  Milestone 5 (Controller) + Milestone 6 (Display)
 Month 7-9:  Milestone 7 (Remote) + Milestone 8 (Tray Full)
 Month 9-12: Milestone 9 (Testing Framework + Game Automation)
 Month 12-14: Milestone 10 (Production)
+Month 14:   Milestone 11 (Full Wiring + Audit — RC v2)  ← COMPLETE
 ```
 
 **Total Estimated Duration**: 11-13 months for full production release

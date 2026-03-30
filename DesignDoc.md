@@ -1359,6 +1359,55 @@ public class DriverHealthMonitor
 
 ---
 
+## Appendix: Wiring Audit (March 2026)
+
+Full end-to-end audit of all three use cases. Every item below was found during the audit and fixed.
+
+### Issues Found and Fixed
+
+| File | Issue | Fix |
+|------|-------|-----|
+| `service.cpp` | `StartProtocolServers`, `InitializeDriverInterface`, etc. were all TODO stubs — service started but launched nothing | Wired to `AsyncWebSocketServer` (8443) and `VNCServer` (5900) via factory API |
+| `websocket_server_async.cpp` | 6 helper methods declared but never defined (linker error); `InjectionWorker` only handled 3 of 8 JSON-RPC methods | Added all definitions; completed worker with keyup, mouse.button/scroll, controller.report, system.ping/version |
+| `protocol_handler.cpp` | Orphaned class — all handlers TODO stubs, no DriverInterface, never instantiated | **Deleted** |
+| `vhidkb/device.c`, `vhidkb/queue.c` | Pure 4-line placeholder files | **Deleted** |
+| `vhidkb.c::vhidkbSendHidReport` | Returned `STATUS_SUCCESS` while doing nothing — `driver_interface.cpp` saw success and never fell back to `SendInput`; keyboard injection silently failed | Returns `STATUS_NOT_IMPLEMENTED` → triggers `SendInput` fallback |
+| `vxinput.c::vxinputEvtDeviceAdd` | Created WDF device but had no IOCTL queue; controller IOCTLs dropped | Added queue + `vxinputEvtIoDeviceControl` handling `SUBMIT_REPORT`, `CREATE_CONTROLLER`, `REMOVE_CONTROLLER` |
+| `vdisplay.c::FinishFrameProcessing` | Signalled the capture event but never published the GPU texture handle | Calls `IDXGIResource::GetSharedHandle`, stores in `VDISPLAY_CONTEXT.SharedTextureHandle` under `CRITICAL_SECTION` |
+| `video_pipeline.cpp::EncodeLoop` | Copied raw BGRA data instead of calling `EncoderManager::EncodeFrame` | Added `ConvertBGRAtoNV12` helper; calls `encoderManager->EncodeFrame`; raw fallback kept for when encoder unavailable |
+| `video_pipeline.cpp::CaptureFromDuplication` | Created + destroyed D3D11 staging texture every frame | Staging texture cached in member; recreated only on dimension change |
+| `intel/qsv_encoder.cpp` | 13-line stub — no C-interface exports (`IntelEncoder_Create` etc.) — linker error | Replaced with proper graceful-failure stubs that try to load `libmfx64-gen.dll`/`libvpl.dll` |
+| `vnc_server.cpp::AnonTLS branch` | After TLS handshake, did `delete tls; goto cleanup` — AnonTLS clients immediately disconnected | `thread_local TlsSocket* t_tls`; `VncSend`/`VncRecvAll` wrappers used throughout all handlers |
+| `vnc_server.cpp` (framebuffer) | `framebuffer_` initialized to zeros, never updated — all VNC clients saw black screen | Added `StartCapture()`/`CaptureLoop()`/`StopCapture()` using DXGI Desktop Duplication; staging texture cached and resized on resolution change |
+| `driver_interface.cpp::InjectControllerReport` | `return false` stub with `UNREFERENCED_PARAMETER` | Calls `DeviceIoControl(IOCTL_VXINPUT_SUBMIT_REPORT)` |
+| `driver_interface.cpp::MapHidModifiers` | All `|= 0` (no-op) | Right-side modifiers set `KEYEVENTF_EXTENDEDKEY` |
+| `idd_video_bridge.cpp::GetVideoPacket` | `*(VideoPacket*)nullptr` — null dereference crash on any call | Fixed to take `VideoPacket&` reference |
+| `idd_video_bridge.cpp::CaptureLoop` | Empty `if (iddHandle_)` branch — counter incremented without capturing | Calls `pipeline_->SubmitTestFrame()` for fallback; IDD path documented for future implementation |
+| `tray/MainWindow.xaml.cs` | `StartDriver`, `StopDriver`, `RestartServer` only updated UI — never touched Windows services | Wired to `System.ServiceProcess.ServiceController` |
+| `tray/TrayIcon.cpp` | Hardcoded `"KVM.ico"` — file didn't exist, crashes on launch | Changed to `SystemIcons::Application` fallback |
+| `automation_framework.cpp::CaptureScreen` | Always returned `true` without capturing | GDI+ BitBlt + PNG encoder |
+| `automation_framework.cpp::HandleMouseDrag` | `return Fail("not yet implemented")` | Mouse move + hold + incremental drag + release |
+| `automation_framework.cpp` | Screenshot-on-failure was a TODO comment | Calls `ScreenshotActionHandler::CaptureScreen` on step failure |
+| `local_automation.cpp::TakeScreenshot` | Printed "saved" without saving | GDI+ BitBlt + PNG encoder |
+| `local_automation.cpp::TestController` | Always returned `true` | Sends real `XUSB_REPORT` via `InjectControllerReport` |
+| `local_automation.cpp::TestDisplay` | Always returned `true` | Captures screenshot, counts non-black pixels |
+| `local_automation.cpp::display.compare` | Always passed | Pixel RMSE comparison via GDI+ |
+| `local_automation.cpp` | `malloc/free` for logger/perfMonitor | `new/delete` |
+| `unified_logger.c::LoggerWriteToEtw` | `UNREFERENCED_PARAMETER` — no-op | `EtwRegister`/`EtwWrite` with 2-field event |
+| `websocket_server.cpp` | `recv()` for extended-length fields unchecked — partial reads/frame desyncs; no frame-size limit | `RecvExact` helper; 16 MB limit |
+| `websocket_server_async.cpp` | No frame-size limit | 16 MB limit added; `DisconnectClient` called on oversize |
+
+### Known Remaining Gaps
+
+| Gap | Notes |
+|-----|-------|
+| `vhidkb` kernel injection | Uses `SendInput` fallback; VHF-based kernel HID injection planned |
+| `vxinput` XInput enumeration | IOCTL accepted; full XInput bus enumeration (ViGEmBus-style) for game compatibility is a future milestone |
+| Software H.264 encoder | `EncoderType::Software` returns false → raw passthrough; add x264/OpenH264 for WAN |
+| WHQL submission | Requires EV code-signing certificate purchase |
+
+---
+
 ## Appendix: Technology Stack
 
 | Component | Technology | Notes |
