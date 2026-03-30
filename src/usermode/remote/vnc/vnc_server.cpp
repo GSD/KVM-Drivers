@@ -6,6 +6,7 @@
 #include <iostream>
 #include <cstring>
 #include <zlib.h>
+#include "../../../common/adaptive_quality.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -148,6 +149,9 @@ private:
 
     // Track active encodings per client (not needed globally, but useful for negotiation logging)
     std::vector<INT32> negotiatedEncodings_;
+
+    // Adaptive quality - shared across all clients, degrades globally under load
+    AdaptiveQuality adaptiveQuality_;
 
     void AcceptLoop() {
         while (running_) {
@@ -341,6 +345,21 @@ private:
         size_t dataSize = (size_t)w * h * 4;
         if (dataSize == 0) return;
 
+        // Throttle frame rate based on adaptive quality tier
+        adaptiveQuality_.CheckSystemLoad();
+        const QualitySettings& qs = adaptiveQuality_.GetSettings();
+        int intervalMs = adaptiveQuality_.GetFrameIntervalMs();
+        (void)intervalMs;  // Caller is responsible for sleep between requests
+
+        // Clamp frame size to quality limit
+        if (dataSize > (size_t)qs.maxFrameSizeBytes) {
+            std::cerr << "[VNC] Frame too large (" << dataSize << " > " << qs.maxFrameSizeBytes
+                      << "), dropping (tier=" << AdaptiveQuality::TierName(adaptiveQuality_.GetTier())
+                      << ")" << std::endl;
+            adaptiveQuality_.ReportDroppedFrame();
+            return;
+        }
+
         auto frameStart = std::chrono::high_resolution_clock::now();
 
         // Send framebuffer update header
@@ -375,12 +394,14 @@ private:
             }
         }
 
-        // Log slow frame sends
+        // Report latency for adaptive quality decision
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::high_resolution_clock::now() - frameStart).count();
+        adaptiveQuality_.ReportFrameLatency((int)elapsed);
         if (elapsed > 100) {
             std::cerr << "[VNC] Slow frame send: " << elapsed << "ms for "
-                      << w << "x" << h << " rect" << std::endl;
+                      << w << "x" << h << " rect (tier="
+                      << AdaptiveQuality::TierName(adaptiveQuality_.GetTier()) << ")" << std::endl;
         }
     }
 
