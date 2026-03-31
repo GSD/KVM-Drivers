@@ -5,6 +5,10 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <wincrypt.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <gdiplus.h>
+#include <objidl.h>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -15,6 +19,11 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <algorithm>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 #include "../../core/driver_interface.h"
 #include "../../common/logging/unified_logger.h"
@@ -77,6 +86,10 @@ public:
         PerfMonitorInitialize(perfMonitor_, PERF_CATEGORY_ALL, 1000, 5000);
         PerfMonitorStartHitchDetection(perfMonitor_, 1000);
 
+        // Initialize GDI+ for JPEG encoding
+        Gdiplus::GdiplusStartupInput gdipInput;
+        Gdiplus::GdiplusStartup(&gdiplusToken_, &gdipInput, nullptr);
+
         // Initialize driver interface
         driverInterface_ = new DriverInterface();
         driverInterface_->Initialize();
@@ -87,6 +100,7 @@ public:
             clients_[i].connected = false;
             clients_[i].handshaked = false;
         }
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) streamingClients_[i] = false;
         
         LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
             "Server initialized on port %d", port);
@@ -110,6 +124,12 @@ public:
             LoggerShutdown(logger_);
             delete logger_;
             logger_ = nullptr;
+        }
+
+        // Shutdown GDI+
+        if (gdiplusToken_) {
+            Gdiplus::GdiplusShutdown(gdiplusToken_);
+            gdiplusToken_ = 0;
         }
     }
     
@@ -578,6 +598,40 @@ private:
         }
     }
     
+    // Handle display.start/stop and info methods synchronously (no driver I/O)
+    void HandleControlMessage(int clientIndex, InjectionMessage& msg) {
+        if (msg.method == "display.start_stream") {
+            StartClientStream(clientIndex, msg.requestId);
+        } else if (msg.method == "display.stop_stream") {
+            StopClientStream(clientIndex, msg.requestId);
+        } else if (msg.method == "display.set_quality") {
+            if (!msg.intParams.empty()) {
+                streamQuality_ = msg.intParams[0];
+            }
+            std::string ack = "{\"jsonrpc\":\"2.0\",\"result\":{\"quality\":" +
+                std::to_string(streamQuality_) + "},\"id\":" +
+                std::to_string(msg.requestId) + "}";
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            if (clients_[clientIndex].connected)
+                clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(ack);
+        } else if (msg.method == "system.get_capabilities") {
+            std::string resp = "{\"jsonrpc\":\"2.0\",\"result\":{\"capabilities\":"
+                "{\"screen\":true,\"keyboard\":true,\"mouse\":true,\"controller\":true},"
+                "\"version\":\"1.0.0\",\"protocol\":\"2.0\"},\"id\":" +
+                std::to_string(msg.requestId) + "}";
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            if (clients_[clientIndex].connected)
+                clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(resp);
+        } else if (msg.method == "auth.authenticate") {
+            // Connection-level auth already enforced by TOFU gate; accept any token here
+            std::string resp = "{\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"authenticated\"},\"id\":" +
+                std::to_string(msg.requestId) + "}";
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            if (clients_[clientIndex].connected)
+                clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(resp);
+        }
+    }
+
     // Queue message for async injection
     void HandleMessage(int clientIndex, const std::string& message) {
         // Tier-aware rate limiting: limit drops as quality degrades under load
@@ -606,10 +660,20 @@ private:
         clients_[clientIndex].inputCountLastSecond++;
         clients_[clientIndex].lastInputTime = now;
         
-        // Queue for injection worker
+        // Parse request
         InjectionMessage msg;
         msg.responseSocket = clients_[clientIndex].socket;
         ParseInjectionRequest(message, msg);
+
+        // Handle non-injection methods directly (streaming, capabilities, auth)
+        if (msg.method == "display.start_stream" ||
+            msg.method == "display.stop_stream"  ||
+            msg.method == "display.set_quality"  ||
+            msg.method == "system.get_capabilities" ||
+            msg.method == "auth.authenticate") {
+            HandleControlMessage(clientIndex, msg);
+            return;
+        }
         
         {
             std::unique_lock<std::mutex> lock(injectionMutex_);
@@ -739,6 +803,30 @@ private:
 
     // Adaptive quality controller - shared across all clients
     AdaptiveQuality adaptiveQuality_;
+
+    // Screen streaming
+    ID3D11Device*            streamD3D_     = nullptr;
+    ID3D11DeviceContext*     streamCtx_     = nullptr;
+    IDXGIOutputDuplication*  streamDupl_    = nullptr;
+    ID3D11Texture2D*         streamStaging_ = nullptr;
+    int                      streamW_       = 0;
+    int                      streamH_       = 0;
+    std::thread              streamThread_;
+    std::atomic<bool>        streamRunning_{false};
+    std::atomic<int>         streamClientCount_{0};
+    bool                     streamingClients_[WS_MAX_CLIENTS]{};
+    int                      streamQuality_ = 70;  // JPEG quality 0-100
+    ULONG_PTR                gdiplusToken_  = 0;
+
+    bool InitCapture();
+    void StartCapture();
+    void StopCapture();
+    void StreamLoop();
+    std::vector<BYTE> EncodeFrameJPEG(const BYTE* bgra, int w, int h, UINT rowPitch);
+    std::string EncodeBinaryFrame(const void* data, size_t len);
+    void StartClientStream(int clientIndex, int requestId);
+    void StopClientStream(int clientIndex, int requestId);
+    void PushResolutionChange(int w, int h);
 };
 
 // ============================================================
@@ -839,6 +927,15 @@ void AsyncWebSocketServer::ParseInjectionRequest(
         msg.intParams.push_back(extractInt("thumbLY"));
         msg.intParams.push_back(extractInt("thumbRX"));
         msg.intParams.push_back(extractInt("thumbRY"));
+    } else if (msg.method == "display.set_quality") {
+        // Map quality string to JPEG quality int
+        std::string qs = extractStr("quality");
+        int jpegQ = 70;
+        if      (qs == "high")     jpegQ = 90;
+        else if (qs == "medium")   jpegQ = 70;
+        else if (qs == "low")      jpegQ = 40;
+        else if (qs == "adaptive") jpegQ = 60;
+        msg.intParams.push_back(jpegQ);
     }
 }
 
@@ -878,6 +975,15 @@ void AsyncWebSocketServer::SendPong(int clientIndex, const std::vector<BYTE>& pa
 void AsyncWebSocketServer::DisconnectClient(int clientIndex) {
     if (clients_[clientIndex].socket == INVALID_SOCKET) return;
 
+    // Clear streaming flag before closing
+    if (streamingClients_[clientIndex]) {
+        streamingClients_[clientIndex] = false;
+        int prev = streamClientCount_.fetch_sub(1);
+        if (prev <= 1) {
+            StopCapture();
+        }
+    }
+
     char clientIP[INET_ADDRSTRLEN] = "unknown";
     inet_ntop(AF_INET, &clients_[clientIndex].address.sin_addr,
         clientIP, INET_ADDRSTRLEN);
@@ -892,6 +998,314 @@ void AsyncWebSocketServer::DisconnectClient(int clientIndex) {
     clients_[clientIndex].handshaked = false;
     clients_[clientIndex].recvBuffer.clear();
     clients_[clientIndex].sendBuffer.clear();
+}
+
+// ============================================================
+// Screen streaming implementation
+// ============================================================
+
+bool AsyncWebSocketServer::InitCapture() {
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL obtained;
+    HRESULT hr = D3D11CreateDevice(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        featureLevels, ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION,
+        &streamD3D_, &obtained, &streamCtx_);
+    if (FAILED(hr)) {
+        LOG_ERROR(logger_, LOG_CATEGORY_NETWORK, "WsStream",
+            "D3D11CreateDevice failed: 0x%x", (unsigned)hr);
+        return false;
+    }
+
+    IDXGIDevice*  dxgiDev   = nullptr;
+    IDXGIAdapter* dxgiAdapt = nullptr;
+    IDXGIOutput*  dxgiOut   = nullptr;
+    IDXGIOutput1* dxgiOut1  = nullptr;
+
+    streamD3D_->QueryInterface(__uuidof(IDXGIDevice),  (void**)&dxgiDev);
+    dxgiDev->GetAdapter(&dxgiAdapt);
+    dxgiAdapt->EnumOutputs(0, &dxgiOut);
+    hr = dxgiOut->QueryInterface(__uuidof(IDXGIOutput1), (void**)&dxgiOut1);
+
+    if (SUCCEEDED(hr)) {
+        hr = dxgiOut1->DuplicateOutput(streamD3D_, &streamDupl_);
+        dxgiOut1->Release();
+    }
+    if (dxgiOut)   dxgiOut->Release();
+    if (dxgiAdapt) dxgiAdapt->Release();
+    if (dxgiDev)   dxgiDev->Release();
+
+    if (FAILED(hr)) {
+        LOG_ERROR(logger_, LOG_CATEGORY_NETWORK, "WsStream",
+            "DuplicateOutput failed: 0x%x", (unsigned)hr);
+        streamD3D_->Release(); streamD3D_ = nullptr;
+        streamCtx_->Release(); streamCtx_ = nullptr;
+        return false;
+    }
+
+    DXGI_OUTDUPL_DESC dd;
+    streamDupl_->GetDesc(&dd);
+    streamW_ = (int)dd.ModeDesc.Width;
+    streamH_ = (int)dd.ModeDesc.Height;
+
+    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "WsStream",
+        "DXGI capture initialized: %dx%d", streamW_, streamH_);
+    return true;
+}
+
+void AsyncWebSocketServer::StartCapture() {
+    if (streamRunning_) return;
+    if (!InitCapture()) {
+        LOG_ERROR(logger_, LOG_CATEGORY_NETWORK, "WsStream",
+            "Capture unavailable — stream will be black");
+        return;
+    }
+    streamRunning_ = true;
+    streamThread_ = std::thread(&AsyncWebSocketServer::StreamLoop, this);
+}
+
+void AsyncWebSocketServer::StopCapture() {
+    streamRunning_ = false;
+    if (streamThread_.joinable()) streamThread_.join();
+    if (streamStaging_) { streamStaging_->Release(); streamStaging_ = nullptr; }
+    if (streamDupl_)    { streamDupl_->Release();    streamDupl_    = nullptr; }
+    if (streamCtx_)     { streamCtx_->Release();     streamCtx_     = nullptr; }
+    if (streamD3D_)     { streamD3D_->Release();     streamD3D_     = nullptr; }
+}
+
+void AsyncWebSocketServer::StreamLoop() {
+    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "WsStream", "Stream thread started");
+
+    while (streamRunning_ && running_) {
+        if (streamClientCount_ <= 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        if (!streamDupl_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            InitCapture();
+            continue;
+        }
+
+        IDXGIResource*           res = nullptr;
+        DXGI_OUTDUPL_FRAME_INFO  fi  = {};
+        HRESULT hr = streamDupl_->AcquireNextFrame(100, &fi, &res);
+
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+
+        if (hr == DXGI_ERROR_ACCESS_LOST) {
+            streamDupl_->Release(); streamDupl_ = nullptr;
+            if (streamStaging_) { streamStaging_->Release(); streamStaging_ = nullptr; }
+            continue;
+        }
+
+        if (FAILED(hr)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        ID3D11Texture2D* gpuTex = nullptr;
+        res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&gpuTex);
+
+        if (gpuTex) {
+            D3D11_TEXTURE2D_DESC desc;
+            gpuTex->GetDesc(&desc);
+
+            bool needNew = !streamStaging_;
+            if (streamStaging_) {
+                D3D11_TEXTURE2D_DESC sd;
+                streamStaging_->GetDesc(&sd);
+                needNew = (sd.Width != desc.Width || sd.Height != desc.Height);
+            }
+            if (needNew) {
+                if (streamStaging_) { streamStaging_->Release(); streamStaging_ = nullptr; }
+                D3D11_TEXTURE2D_DESC sd = desc;
+                sd.Usage           = D3D11_USAGE_STAGING;
+                sd.BindFlags       = 0;
+                sd.CPUAccessFlags  = D3D11_CPU_ACCESS_READ;
+                sd.MiscFlags       = 0;
+                streamD3D_->CreateTexture2D(&sd, nullptr, &streamStaging_);
+                streamW_ = (int)desc.Width;
+                streamH_ = (int)desc.Height;
+                PushResolutionChange(streamW_, streamH_);
+            }
+
+            if (streamStaging_) {
+                streamCtx_->CopyResource(streamStaging_, gpuTex);
+                D3D11_MAPPED_SUBRESOURCE mapped;
+                if (SUCCEEDED(streamCtx_->Map(streamStaging_, 0,
+                        D3D11_MAP_READ, 0, &mapped))) {
+                    std::vector<BYTE> jpeg = EncodeFrameJPEG(
+                        reinterpret_cast<const BYTE*>(mapped.pData),
+                        streamW_, streamH_, (UINT)mapped.RowPitch);
+                    streamCtx_->Unmap(streamStaging_, 0);
+
+                    if (!jpeg.empty()) {
+                        std::string frame = EncodeBinaryFrame(jpeg.data(), jpeg.size());
+                        std::lock_guard<std::mutex> lock(clientsMutex_);
+                        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                            if (streamingClients_[i] && clients_[i].connected) {
+                                clients_[i].sendBuffer += frame;
+                            }
+                        }
+                    }
+                }
+            }
+            gpuTex->Release();
+        }
+
+        res->Release();
+        streamDupl_->ReleaseFrame();
+
+        // ~30 fps target
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+    }
+
+    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "WsStream", "Stream thread stopped");
+}
+
+std::vector<BYTE> AsyncWebSocketServer::EncodeFrameJPEG(
+        const BYTE* bgra, int w, int h, UINT rowPitch) {
+    using namespace Gdiplus;
+
+    // DXGI BGRA → GDI+ PixelFormat32bppARGB (identical byte layout on little-endian)
+    Bitmap bmp(w, h, (INT)rowPitch, PixelFormat32bppARGB, const_cast<BYTE*>(bgra));
+
+    // Find JPEG encoder
+    UINT num = 0, size = 0;
+    GetImageEncodersSize(&num, &size);
+    if (!size) return {};
+
+    std::vector<BYTE> codecBuf(size);
+    ImageCodecInfo* pInfo = reinterpret_cast<ImageCodecInfo*>(codecBuf.data());
+    GetImageEncoders(num, size, pInfo);
+
+    CLSID jpegClsid = {};
+    bool  found     = false;
+    for (UINT j = 0; j < num; j++) {
+        if (wcscmp(pInfo[j].MimeType, L"image/jpeg") == 0) {
+            jpegClsid = pInfo[j].Clsid;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return {};
+
+    // Encode to IStream
+    IStream* stream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)) || !stream) return {};
+
+    EncoderParameters params;
+    params.Count = 1;
+    params.Parameter[0].Guid               = EncoderQuality;
+    params.Parameter[0].Type               = EncoderParameterValueTypeLong;
+    params.Parameter[0].NumberOfValues     = 1;
+    ULONG quality = (ULONG)streamQuality_;
+    params.Parameter[0].Value = &quality;
+
+    bmp.Save(stream, &jpegClsid, &params);
+
+    // Copy to vector
+    STATSTG stat = {};
+    stream->Stat(&stat, STATFLAG_NONAME);
+    size_t jpegSize = (size_t)stat.cbSize.QuadPart;
+
+    std::vector<BYTE> result(jpegSize);
+    LARGE_INTEGER li = {};
+    stream->Seek(li, STREAM_SEEK_SET, nullptr);
+    ULONG read = 0;
+    stream->Read(result.data(), (ULONG)jpegSize, &read);
+    stream->Release();
+    result.resize(read);
+    return result;
+}
+
+std::string AsyncWebSocketServer::EncodeBinaryFrame(const void* data, size_t len) {
+    std::string frame;
+    frame.push_back((char)0x82);  // FIN + binary opcode
+    if (len < 126) {
+        frame.push_back((char)len);
+    } else if (len < 65536) {
+        frame.push_back((char)126);
+        frame.push_back((char)((len >> 8) & 0xFF));
+        frame.push_back((char)(len & 0xFF));
+    } else {
+        frame.push_back((char)127);
+        for (int i = 7; i >= 0; i--)
+            frame.push_back((char)((len >> (i * 8)) & 0xFF));
+    }
+    const char* d = static_cast<const char*>(data);
+    frame.append(d, len);
+    return frame;
+}
+
+void AsyncWebSocketServer::StartClientStream(int clientIndex, int requestId) {
+    if (clientIndex < 0 || clientIndex >= WS_MAX_CLIENTS) return;
+
+    if (!streamingClients_[clientIndex]) {
+        streamingClients_[clientIndex] = true;
+        streamClientCount_++;
+        if (streamClientCount_ == 1) {
+            StartCapture();
+        }
+    }
+
+    // ACK + send current resolution if known
+    {
+        std::lock_guard<std::mutex> lock(clientsMutex_);
+        if (!clients_[clientIndex].connected) return;
+
+        if (streamW_ > 0 && streamH_ > 0) {
+            std::string resMsg =
+                "{\"jsonrpc\":\"2.0\",\"method\":\"display.resolution_change\","
+                "\"params\":{\"width\":" + std::to_string(streamW_) +
+                ",\"height\":" + std::to_string(streamH_) + "}}";
+            clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(resMsg);
+        }
+
+        std::string ack =
+            "{\"jsonrpc\":\"2.0\",\"result\":{\"streaming\":true},\"id\":" +
+            std::to_string(requestId) + "}";
+        clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(ack);
+    }
+
+    LOG_INFO(logger_, LOG_CATEGORY_NETWORK, "WsStream",
+        "Client %d started streaming (active streams=%d)",
+        clientIndex, (int)streamClientCount_);
+}
+
+void AsyncWebSocketServer::StopClientStream(int clientIndex, int requestId) {
+    if (clientIndex < 0 || clientIndex >= WS_MAX_CLIENTS) return;
+
+    if (streamingClients_[clientIndex]) {
+        streamingClients_[clientIndex] = false;
+        int prev = streamClientCount_.fetch_sub(1);
+        if (prev <= 1) StopCapture();
+    }
+
+    std::lock_guard<std::mutex> lock(clientsMutex_);
+    if (clients_[clientIndex].connected) {
+        std::string ack =
+            "{\"jsonrpc\":\"2.0\",\"result\":{\"streaming\":false},\"id\":" +
+            std::to_string(requestId) + "}";
+        clients_[clientIndex].sendBuffer += EncodeWebSocketFrame(ack);
+    }
+}
+
+void AsyncWebSocketServer::PushResolutionChange(int w, int h) {
+    std::string msg =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"display.resolution_change\","
+        "\"params\":{\"width\":" + std::to_string(w) +
+        ",\"height\":" + std::to_string(h) + "}}";
+    std::lock_guard<std::mutex> lock(clientsMutex_);
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (streamingClients_[i] && clients_[i].connected) {
+            clients_[i].sendBuffer += EncodeWebSocketFrame(msg);
+        }
+    }
 }
 
 // ============================================================

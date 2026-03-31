@@ -412,7 +412,7 @@
             
             <div class="modal-row">
                 <label>
-                    <input type="checkbox" id="tlsEnabled" checked> Use TLS (WebSocket Secure)
+                    <input type="checkbox" id="tlsEnabled"> Use TLS (WebSocket Secure — requires server cert)
                 </label>
             </div>
             
@@ -561,31 +561,41 @@
         }
         
         // Message handling
+        // Binary frame type: server sends raw JPEG as binary WebSocket frames
+        // Make sure ws.binaryType is set to 'blob' (default) so we receive Blobs
+
         function handleMessage(data) {
+            // Binary frame = raw JPEG from screen capture stream
+            if (data instanceof Blob) {
+                handleVideoBlob(data);
+                return;
+            }
             try {
                 const msg = JSON.parse(data);
-                
-                // Handle JSON-RPC responses
                 if (msg.jsonrpc === '2.0') {
                     if (msg.method === 'display.frame') {
-                        // Video frame received
+                        // Server pushed a base64 JPEG frame
                         handleVideoFrame(msg.params);
                     } else if (msg.method === 'display.resolution_change') {
-                        // Update canvas size
-                        canvas.width = msg.params.width;
-                        canvas.height = msg.params.height;
-                        document.getElementById('statResolution').textContent = 
-                            `${msg.params.width}x${msg.params.height}`;
-                    } else if (msg.result && msg.result.capabilities) {
-                        // Capabilities response
-                        console.log('Server capabilities:', msg.result.capabilities);
+                        const { width, height } = msg.params;
+                        canvas.width  = width;
+                        canvas.height = height;
+                        document.getElementById('statResolution').textContent = `${width}x${height}`;
+                        showNotification(`Resolution: ${width}x${height}`, 'info');
+                    } else if (msg.result !== undefined) {
+                        // Generic RPC result — log capabilities if present
+                        if (msg.result && msg.result.capabilities) {
+                            console.log('[KVM] Server capabilities:', msg.result.capabilities);
+                        }
+                        if (msg.result && msg.result.version) {
+                            console.log('[KVM] Server version:', msg.result.version);
+                        }
+                    } else if (msg.error) {
+                        console.warn('[KVM] RPC error:', msg.error.message, '(id='+msg.id+')');
                     }
                 }
             } catch (e) {
-                // Binary data (video frame)
-                if (data instanceof Blob) {
-                    handleVideoBlob(data);
-                }
+                console.warn('[KVM] Unhandled message', e);
             }
         }
         
@@ -652,9 +662,9 @@
                     jsonrpc: '2.0',
                     method: 'input.mouse.move',
                     params: {
-                        mode: 'absolute',
                         x: x,
-                        y: y
+                        y: y,
+                        absolute: true
                     }
                 });
             }
@@ -717,7 +727,7 @@
                 jsonrpc: '2.0',
                 method: 'input.keyboard.keydown',
                 params: {
-                    keycode: e.keyCode,
+                    keyCode: e.keyCode,
                     modifiers: getModifiers(e)
                 }
             });
@@ -731,7 +741,7 @@
                 jsonrpc: '2.0',
                 method: 'input.keyboard.keyup',
                 params: {
-                    keycode: e.keyCode,
+                    keyCode: e.keyCode,
                     modifiers: getModifiers(e)
                 }
             });
@@ -769,13 +779,14 @@
                 return;
             }
             
-            sendJSON({
-                jsonrpc: '2.0',
-                method: 'input.keyboard.combo',
-                params: {
-                    keys: ['ctrl', 'alt', 'delete']
-                }
-            });
+            // Send Ctrl+Alt+Del as three individual key events
+            const VK_CTRL = 0x11, VK_ALT = 0x12, VK_DELETE = 0x2E;
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keydown', params: { keyCode: VK_CTRL,   modifiers: 0 } });
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keydown', params: { keyCode: VK_ALT,    modifiers: 0 } });
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keydown', params: { keyCode: VK_DELETE, modifiers: 0 } });
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keyup',   params: { keyCode: VK_DELETE, modifiers: 0 } });
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keyup',   params: { keyCode: VK_ALT,    modifiers: 0 } });
+            sendJSON({ jsonrpc: '2.0', method: 'input.keyboard.keyup',   params: { keyCode: VK_CTRL,   modifiers: 0 } });
             
             showNotification('Sent Ctrl+Alt+Del', 'success');
         }

@@ -696,8 +696,22 @@ private:
             VncSend(clientSocket, (char*)&width, 2);
             VncSend(clientSocket, (char*)&height, 2);
 
-            // Pixel format (32-bit BGRX)
-            char pixelFormat[16] = { 32, 24, 0, 1, 0, 0, 255, 255, 255, 16, 8, 0, 0, 0, 0 };
+            // Pixel format: 32bpp, depth 24, little-endian, true-colour
+            // DXGI format is BGRX: B at bits 0-7, G at 8-15, R at 16-23
+            // RFB CARD16 values are big-endian in the protocol message
+            char pixelFormat[16] = {
+                32,       // bits-per-pixel
+                24,       // depth
+                0,        // big-endian-flag (0 = little-endian pixel layout)
+                1,        // true-colour-flag
+                0, 255,   // red-max   = 255  (big-endian CARD16)
+                0, 255,   // green-max = 255
+                0, 255,   // blue-max  = 255
+                16,       // red-shift   (R is at bits 16-23 in BGRA)
+                8,        // green-shift (G is at bits  8-15)
+                0,        // blue-shift  (B is at bits  0-7)
+                0, 0, 0   // 3 padding bytes
+            };
             VncSend(clientSocket, pixelFormat, 16);
 
             // Desktop name
@@ -730,6 +744,9 @@ private:
                     break;
                 case RFB::ClientPointerEvent:
                     HandlePointerEvent(clientSocket, inputState);
+                    break;
+                case RFB::ClientCutText:
+                    HandleCutText(clientSocket);
                     break;
                 default:
                     std::cerr << "[VNC] Unknown message type: " << (int)msgType
@@ -799,15 +816,14 @@ private:
                     UINT8 subtype = bgChanged ? (UINT8)HT_BackgroundSpec : 0;
                     tileBuf.push_back(subtype);
                     if (bgChanged) {
-                        // 4 bytes: BGRX (little-endian, as in framebuffer)
-                        UINT8 r = (UINT8)((firstPx >>  0) & 0xFF);  // B
-                        UINT8 g = (UINT8)((firstPx >>  8) & 0xFF);  // G
-                        UINT8 b = (UINT8)((firstPx >> 16) & 0xFF);  // R
-                        UINT8 a = 0;
-                        tileBuf.push_back(b);  // red channel first for BGRX
-                        tileBuf.push_back(g);
-                        tileBuf.push_back(r);
-                        tileBuf.push_back(a);
+                        // Send pixel bytes in BGRX memory order so the client
+                        // reads them as a little-endian uint32 with
+                        // R at bits 16-23, G at 8-15, B at 0-7 — matching our
+                        // declared pixel format (red-shift=16, green-shift=8).
+                        tileBuf.push_back((UINT8)( firstPx        & 0xFF));  // B (bits 0-7)
+                        tileBuf.push_back((UINT8)((firstPx >>  8) & 0xFF));  // G (bits 8-15)
+                        tileBuf.push_back((UINT8)((firstPx >> 16) & 0xFF));  // R (bits 16-23)
+                        tileBuf.push_back(0);                                 // unused
                         lastBG = firstPx;
                     }
                     firstTile = false;
@@ -864,15 +880,17 @@ private:
                         tileBuf.push_back(subtype);
 
                         if (bgChanged) {
+                            // Background BGRX bytes
                             tileBuf.push_back((UINT8)(bgColor        & 0xFF));
-                            tileBuf.push_back((UINT8)((bgColor >> 8) & 0xFF));
-                            tileBuf.push_back((UINT8)((bgColor >>16) & 0xFF));
+                            tileBuf.push_back((UINT8)((bgColor >>  8) & 0xFF));
+                            tileBuf.push_back((UINT8)((bgColor >> 16) & 0xFF));
                             tileBuf.push_back(0);
                             lastBG = bgColor;
                         }
+                        // Foreground BGRX bytes
                         tileBuf.push_back((UINT8)(fgColor        & 0xFF));
-                        tileBuf.push_back((UINT8)((fgColor >> 8) & 0xFF));
-                        tileBuf.push_back((UINT8)((fgColor >>16) & 0xFF));
+                        tileBuf.push_back((UINT8)((fgColor >>  8) & 0xFF));
+                        tileBuf.push_back((UINT8)((fgColor >> 16) & 0xFF));
                         tileBuf.push_back(0);
 
                         // Count and encode subrects (1x1 runs of non-BG pixels)
@@ -885,9 +903,10 @@ private:
                                 if (pxVal != bgColor) {
                                     if (nColors > 2) {
                                         // SubrectsColoured: color + pos
-                                        subrects.push_back((UINT8)(pxVal        & 0xFF));
-                                        subrects.push_back((UINT8)((pxVal >> 8) & 0xFF));
-                                        subrects.push_back((UINT8)((pxVal >>16) & 0xFF));
+                                        // Subrect color in BGRX byte order
+                                        subrects.push_back((UINT8)( pxVal        & 0xFF));
+                                        subrects.push_back((UINT8)((pxVal >>  8) & 0xFF));
+                                        subrects.push_back((UINT8)((pxVal >> 16) & 0xFF));
                                         subrects.push_back(0);
                                     }
                                     // subrect: hi4=x, lo4=y, hi4=w-1, lo4=h-1
@@ -952,7 +971,30 @@ private:
     void HandleSetPixelFormat(SOCKET sock) {
         char buf[19];  // 3 padding + 16 pixel format bytes
         if (!VncRecvAll(sock, buf, 19)) return;
-        std::cout << "[VNC] SetPixelFormat received" << std::endl;
+        std::cout << "[VNC] SetPixelFormat received (keeping server format)" << std::endl;
+    }
+
+    void HandleCutText(SOCKET sock) {
+        char padding[3];
+        UINT32 textLenNet;
+        if (!VncRecvAll(sock, padding, 3)) return;
+        if (!VncRecvAll(sock, (char*)&textLenNet, 4)) return;
+        UINT32 textLen = ntohl(textLenNet);
+        // Consume the clipboard text (ignore for now to keep client connected)
+        if (textLen > 0 && textLen < 1024 * 1024) {
+            std::vector<char> text(textLen);
+            VncRecvAll(sock, text.data(), (int)textLen);
+        } else if (textLen >= 1024 * 1024) {
+            // Oversized clipboard text — consume in chunks to stay in sync
+            char chunk[4096];
+            UINT32 remaining = textLen;
+            while (remaining > 0) {
+                int n = (int)std::min((UINT32)sizeof(chunk), remaining);
+                if (!VncRecvAll(sock, chunk, n)) return;
+                remaining -= n;
+            }
+        }
+        std::cout << "[VNC] ClientCutText: " << textLen << " bytes (discarded)" << std::endl;
     }
 
     void HandleSetEncodings(SOCKET sock) {
