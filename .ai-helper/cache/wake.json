@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-04-04T21:15:42.749Z",
+  "stale_after": "2026-04-04T21:20:42.749Z",
+  "events": [
+    {
+      "type": "agent_idle_nudge",
+      "detail": "Agent finished work but didn't pick up next issue. Queue has items.",
+      "priority": "medium"
+    }
+  ]
+}

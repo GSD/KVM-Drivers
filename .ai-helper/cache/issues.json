@@ -1,0 +1,10 @@
+[
+  {
+    "number": 1,
+    "title": "Feature: Thunderbolt Bridge networking support for cross-platform agent communication",
+    "labels": [],
+    "stage": "open",
+    "body": "Context\nThe QualityAgent project needs high-speed, low-latency communication between a Windows game host (running KVM-Drivers) and a Mac/Linux agent host (running the AI agent). \nCurrently the architecture assumes LAN networking over WebSocket. A USB-C/Thunderbolt cable between the two machines...",
+    "url": "https://github.com/pauliver/KVM-Drivers/issues/1"
+  }
+]

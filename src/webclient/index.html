@@ -452,13 +452,19 @@
         let ctx = canvas.getContext('2d');
         let inputCapture = document.getElementById('inputCapture');
         
-        // Frame decoding
-        let frameDecoder = null;
+        // Frame stats
         let frameCount = 0;
         let lastFpsTime = Date.now();
+        let totalBytesReceived = 0;
+        let lastBandwidthBytes = 0;
+        let lastBandwidthTime = Date.now();
+
+        // Latency tracking (ping-based)
+        let pingSeq = 0;
+        let pendingPingTime = 0;
+        let pingIntervalId = null;
         
         // Input tracking
-        let mouseButtons = 0;
         let lastMouseX = 0;
         let lastMouseY = 0;
         
@@ -499,6 +505,7 @@
                     document.getElementById('connectBtn').textContent = 'Disconnect';
                     document.getElementById('connectBtn').classList.add('disconnect');
                     document.getElementById('overlay').style.display = 'none';
+                    startLatencyProbe();
                     
                     // Send authentication if provided
                     if (token) {
@@ -542,6 +549,7 @@
                 ws.onclose = () => {
                     isConnected = false;
                     updateConnectionStatus(false);
+                    stopLatencyProbe();
                     document.getElementById('connectBtn').textContent = 'Connect';
                     document.getElementById('connectBtn').classList.remove('disconnect');
                     document.getElementById('overlay').style.display = 'block';
@@ -583,12 +591,18 @@
                         document.getElementById('statResolution').textContent = `${width}x${height}`;
                         showNotification(`Resolution: ${width}x${height}`, 'info');
                     } else if (msg.result !== undefined) {
-                        // Generic RPC result — log capabilities if present
+                        // Generic RPC result
                         if (msg.result && msg.result.capabilities) {
                             console.log('[KVM] Server capabilities:', msg.result.capabilities);
                         }
                         if (msg.result && msg.result.version) {
                             console.log('[KVM] Server version:', msg.result.version);
+                        }
+                        // Ping response → update latency display
+                        if (msg.id >= 9000 && pendingPingTime > 0) {
+                            const rtt = Math.round(performance.now() - pendingPingTime);
+                            document.getElementById('statLatency').textContent = rtt + ' ms';
+                            pendingPingTime = 0;
                         }
                     } else if (msg.error) {
                         console.warn('[KVM] RPC error:', msg.error.message, '(id='+msg.id+')');
@@ -612,10 +626,17 @@
         }
         
         async function handleVideoBlob(blob) {
-            // Handle binary video data
-            const bitmap = await createImageBitmap(blob);
-            ctx.drawImage(bitmap, 0, 0);
-            bitmap.close();
+            // Raw JPEG binary frame from the stream thread
+            totalBytesReceived += blob.size;
+            try {
+                const bitmap = await createImageBitmap(blob);
+                // Scale to fill canvas exactly (canvas already has server resolution
+                // set by display.resolution_change, so this is 1:1)
+                ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                bitmap.close();
+            } catch (e) {
+                // Not a valid image (e.g. partial frame on connect) - ignore
+            }
             frameCount++;
         }
         
@@ -650,8 +671,12 @@
             if (!isConnected || controlMode !== 'control') return;
             
             const rect = canvas.getBoundingClientRect();
-            const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
-            const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+            // Clamp to canvas bounds: inputCapture covers the whole container,
+            // not just the canvas rectangle, so out-of-bounds coords are possible.
+            const x = Math.max(0, Math.min(canvas.width  - 1,
+                Math.round((e.clientX - rect.left) * (canvas.width  / rect.width))));
+            const y = Math.max(0, Math.min(canvas.height - 1,
+                Math.round((e.clientY - rect.top)  * (canvas.height / rect.height))));
             
             // Only send if position changed significantly
             if (Math.abs(x - lastMouseX) > 1 || Math.abs(y - lastMouseY) > 1) {
@@ -832,18 +857,44 @@
         }
         
         function updateStats() {
-            // Calculate FPS
             const now = Date.now();
-            const elapsed = now - lastFpsTime;
-            
-            if (elapsed >= 1000) {
-                const fps = Math.round((frameCount * 1000) / elapsed);
+
+            // FPS
+            const fpsElapsed = now - lastFpsTime;
+            if (fpsElapsed >= 1000) {
+                const fps = Math.round((frameCount * 1000) / fpsElapsed);
                 document.getElementById('statFps').textContent = fps + ' fps';
                 frameCount = 0;
                 lastFpsTime = now;
             }
+
+            // Bandwidth (KB/s)
+            const bwElapsed = now - lastBandwidthTime;
+            if (bwElapsed >= 1000) {
+                const bytesDelta = totalBytesReceived - lastBandwidthBytes;
+                const kbps = Math.round(bytesDelta / bwElapsed);  // KB/s
+                document.getElementById('statBandwidth').textContent = kbps + ' KB/s';
+                lastBandwidthBytes = totalBytesReceived;
+                lastBandwidthTime = now;
+            }
             
             requestAnimationFrame(updateStats);
+        }
+
+        // Ping-based round-trip latency
+        function startLatencyProbe() {
+            stopLatencyProbe();
+            pingIntervalId = setInterval(() => {
+                if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
+                pingSeq++;
+                pendingPingTime = performance.now();
+                sendJSON({ jsonrpc: '2.0', method: 'system.ping', id: 9000 + pingSeq });
+            }, 2000);
+        }
+
+        function stopLatencyProbe() {
+            if (pingIntervalId) { clearInterval(pingIntervalId); pingIntervalId = null; }
+            document.getElementById('statLatency').textContent = '-';
         }
         
         function showNotification(message, type = 'info') {

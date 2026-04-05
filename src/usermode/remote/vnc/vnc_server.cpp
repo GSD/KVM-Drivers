@@ -371,8 +371,9 @@ private:
     std::vector<char> framebuffer_;  // Pre-allocated, avoids per-frame heap alloc
     std::mutex framebufferMutex_;
 
-    // Track active encodings per client (not needed globally, but useful for negotiation logging)
-    std::vector<INT32> negotiatedEncodings_;
+    // Note: negotiatedEncodings_ removed - it was a shared class member written by all
+    // client threads (data race). Each HandleClient thread now carries its own local
+    // std::vector<INT32> passed by reference into HandleSetEncodings/HandleUpdateRequest.
 
     // Adaptive quality - shared across all clients, degrades globally under load
     AdaptiveQuality adaptiveQuality_;
@@ -721,8 +722,9 @@ private:
             VncSend(clientSocket, name, (int)strlen(name));
             std::cout << "[VNC] Handshake complete with " << clientIP << std::endl;
 
-            // Per-client input state (local to this thread - no locking needed)
+            // Per-client state (local to this thread - no locking needed)
             ClientInputState inputState;
+            std::vector<INT32> clientEncodings;  // per-connection, replaces shared negotiatedEncodings_
 
             // Main message loop
             while (running_) {
@@ -734,10 +736,10 @@ private:
                     HandleSetPixelFormat(clientSocket);
                     break;
                 case RFB::ClientSetEncodings:
-                    HandleSetEncodings(clientSocket);
+                    HandleSetEncodings(clientSocket, clientEncodings);
                     break;
                 case RFB::ClientFramebufferUpdateRequest:
-                    HandleUpdateRequest(clientSocket);
+                    HandleUpdateRequest(clientSocket, clientEncodings);
                     break;
                 case RFB::ClientKeyEvent:
                     HandleKeyEvent(clientSocket);
@@ -997,7 +999,7 @@ private:
         std::cout << "[VNC] ClientCutText: " << textLen << " bytes (discarded)" << std::endl;
     }
 
-    void HandleSetEncodings(SOCKET sock) {
+    void HandleSetEncodings(SOCKET sock, std::vector<INT32>& outEncodings) {
         char padding;
         if (!VncRecvAll(sock, &padding, 1)) return;
 
@@ -1007,25 +1009,23 @@ private:
 
         // CRITICAL: consume ALL encoding entries to keep protocol in sync
         // Previously only consumed min(numEncodings, 10), causing protocol desync
-        std::vector<INT32> encodings;
-        encodings.reserve(numEncodings);
+        outEncodings.clear();
+        outEncodings.reserve(numEncodings);
         for (int i = 0; i < (int)numEncodings; i++) {
             INT32 enc;
             if (!VncRecvAll(sock, (char*)&enc, 4)) return;
-            encodings.push_back(ntohl(enc));
+            outEncodings.push_back(ntohl(enc));
         }
 
         // Log negotiated encodings
         std::cout << "[VNC] Client offered " << numEncodings << " encodings:";
-        for (auto e : encodings) {
+        for (auto e : outEncodings) {
             std::cout << " " << e;
         }
         std::cout << std::endl;
-
-        negotiatedEncodings_ = encodings;
     }
 
-    void HandleUpdateRequest(SOCKET sock) {
+    void HandleUpdateRequest(SOCKET sock, const std::vector<INT32>& encodings) {
         char incremental;
         UINT16 x, y, w, h;
         if (!VncRecvAll(sock, &incremental, 1)) return;
@@ -1063,7 +1063,7 @@ private:
 
         // Pick best encoding: prefer Hextile (5) over Raw (0)
         bool useHextile = false;
-        for (INT32 enc : negotiatedEncodings_) {
+        for (INT32 enc : encodings) {
             if (enc == RFB::EncodingHextile) { useHextile = true; break; }
         }
 

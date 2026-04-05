@@ -260,8 +260,11 @@ private:
                 if (clients_[i].socket != INVALID_SOCKET) {
                     FD_SET(clients_[i].socket, &readSet);
                     
-                    // Add to write set if we have data to send
-                    if (!clients_[i].sendBuffer.empty()) {
+                    // Always include handshaked clients in the write set so that
+                    // HandleClientWrite (which now checks the buffer under its own
+                    // lock) gets called every iteration.  Avoids a lockless peek at
+                    // sendBuffer.empty() that would race with producer threads.
+                    if (clients_[i].handshaked) {
                         FD_SET(clients_[i].socket, &writeSet);
                     }
                     
@@ -454,27 +457,41 @@ private:
     }
     
     // Handle client write (non-blocking)
+    // Uses swap-under-lock so I/O happens outside the mutex.
     void HandleClientWrite(int clientIndex) {
-        WSClient& client = clients_[clientIndex];
-        
-        if (client.sendBuffer.empty()) return;
-        
-        int sent = send(client.socket, client.sendBuffer.data(), 
-            (int)client.sendBuffer.length(), 0);
-        
+        // Grab current send buffer under lock, leave it empty for producers
+        std::string toSend;
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            if (clients_[clientIndex].sendBuffer.empty()) return;
+            toSend = std::move(clients_[clientIndex].sendBuffer);
+            // sendBuffer is now empty; producers can safely append new data
+        }
+
+        int sent = send(clients_[clientIndex].socket,
+            toSend.data(), (int)toSend.length(), 0);
+
         if (sent == SOCKET_ERROR) {
             int error = WSAGetLastError();
             if (error != WSAEWOULDBLOCK) {
-                LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket", 
+                LOG_WARNING(logger_, LOG_CATEGORY_NETWORK, "AsyncWebSocket",
                     "send() error on client %d: %d", clientIndex, error);
             }
+            // Put data back so it isn't lost
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            clients_[clientIndex].sendBuffer =
+                toSend + clients_[clientIndex].sendBuffer;
             return;
         }
-        
-        // Remove sent data from buffer
+
         if (sent > 0) {
-            client.sendBuffer.erase(0, sent);
             clients_[clientIndex].messagesSent++;
+            if ((size_t)sent < toSend.size()) {
+                // Partial send: prepend remainder ahead of any newly queued data
+                std::lock_guard<std::mutex> lock(clientsMutex_);
+                clients_[clientIndex].sendBuffer =
+                    toSend.substr(sent) + clients_[clientIndex].sendBuffer;
+            }
         }
     }
     
@@ -634,7 +651,22 @@ private:
 
     // Queue message for async injection
     void HandleMessage(int clientIndex, const std::string& message) {
-        // Tier-aware rate limiting: limit drops as quality degrades under load
+        // Parse first so control messages bypass rate limiting entirely
+        InjectionMessage msg;
+        msg.responseSocket = clients_[clientIndex].socket;
+        ParseInjectionRequest(message, msg);
+
+        // Control messages: handle directly, never rate-limited
+        if (msg.method == "display.start_stream" ||
+            msg.method == "display.stop_stream"  ||
+            msg.method == "display.set_quality"  ||
+            msg.method == "system.get_capabilities" ||
+            msg.method == "auth.authenticate") {
+            HandleControlMessage(clientIndex, msg);
+            return;
+        }
+
+        // Tier-aware rate limiting for input injection only
         const QualitySettings& qs = adaptiveQuality_.GetSettings();
         int rateLimit = qs.targetFps * 2;  // Allow 2 inputs per frame at current tier
 
@@ -659,21 +691,6 @@ private:
         
         clients_[clientIndex].inputCountLastSecond++;
         clients_[clientIndex].lastInputTime = now;
-        
-        // Parse request
-        InjectionMessage msg;
-        msg.responseSocket = clients_[clientIndex].socket;
-        ParseInjectionRequest(message, msg);
-
-        // Handle non-injection methods directly (streaming, capabilities, auth)
-        if (msg.method == "display.start_stream" ||
-            msg.method == "display.stop_stream"  ||
-            msg.method == "display.set_quality"  ||
-            msg.method == "system.get_capabilities" ||
-            msg.method == "auth.authenticate") {
-            HandleControlMessage(clientIndex, msg);
-            return;
-        }
         
         {
             std::unique_lock<std::mutex> lock(injectionMutex_);
@@ -1145,10 +1162,14 @@ void AsyncWebSocketServer::StreamLoop() {
 
                     if (!jpeg.empty()) {
                         std::string frame = EncodeBinaryFrame(jpeg.data(), jpeg.size());
+                        static constexpr size_t MAX_SEND_BUF = 1 * 1024 * 1024; // 1 MB
                         std::lock_guard<std::mutex> lock(clientsMutex_);
                         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
                             if (streamingClients_[i] && clients_[i].connected) {
-                                clients_[i].sendBuffer += frame;
+                                if (clients_[i].sendBuffer.size() < MAX_SEND_BUF) {
+                                    clients_[i].sendBuffer += frame;
+                                }
+                                // else: client can't keep up - silently drop frame
                             }
                         }
                     }

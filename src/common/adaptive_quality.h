@@ -8,6 +8,7 @@
 #include <chrono>
 #include <algorithm>
 #include <iostream>
+#include <mutex>
 
 // Quality tiers - system degrades/recovers through these levels
 enum class QualityTier {
@@ -65,6 +66,7 @@ public:
     void ReportFrameLatency(int latencyMs) {
         totalFrames_.fetch_add(1, std::memory_order_relaxed);
 
+        std::lock_guard<std::mutex> lk(mutex_);
         if (latencyMs > degradeThresholdMs_) {
             consecutiveSlow_++;
             consecutiveFast_ = 0;
@@ -94,6 +96,7 @@ public:
     // Report a dropped frame (queue full, client too slow)
     void ReportDroppedFrame() {
         droppedFrames_.fetch_add(1, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lk(mutex_);
         consecutiveSlow_ += 2;  // Weigh drops more heavily
         if (consecutiveSlow_ >= 3) {
             Degrade("dropped frame");
@@ -103,6 +106,7 @@ public:
 
     // Poll CPU usage and degrade if system is overloaded
     void CheckSystemLoad() {
+        std::lock_guard<std::mutex> lk(mutex_);
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastCheck_).count();
         if (elapsed < 5) return;  // Only check every 5s
@@ -161,6 +165,7 @@ public:
     }
 
 private:
+    mutable std::mutex mutex_;          // guards all non-atomic members below
     std::atomic<QualityTier> currentTier_;
     int degradeThresholdMs_;
     int recoverThresholdMs_;
@@ -174,6 +179,7 @@ private:
     ULONGLONG prevUser_   = 0;
     ULONGLONG prevIdle_   = 0;
 
+    // NOTE: Degrade/Recover must only be called with mutex_ already held.
     void Degrade(const std::string& reason) {
         QualityTier current = currentTier_.load();
         if (current < QualityTier::MINIMAL) {
